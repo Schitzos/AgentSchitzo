@@ -1,0 +1,31 @@
+{
+  "name": "agentschitzo",
+  "version": "1.0.0",
+  "description": "Telegram automation service for Codex over Telegram.",
+  "main": "telegram-listener.js",
+  "scripts": {
+    "start": "node telegram-listener.js",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --coverage --coverageReporters=json-summary --coverageReporters=text-summary",
+    "test:hook": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
+    "commitlint": "commitlint --edit",
+    "prepare": "node ./utils/prepare-husky.js"
+  },
+  "jest": {
+    "roots": [
+      "<rootDir>/tests"
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
+    "husky": "^9.1.7",
+    "jest": "^30.3.0"
+  },
+  "dependencies": {
+    "openai": "^6.34.0"
+  }
+}
