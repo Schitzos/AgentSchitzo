@@ -7,9 +7,60 @@ import type {
 } from "../../types/telegram/application/code-task-verifier.ts";
 
 const COVERAGE_SUMMARY_PATH = path.join("coverage", "coverage-summary.json");
+const LAST_CODEX_RUN_PATH = path.join("logs", "last-codex-run.json");
 
 export function readTotalBranchCoverage(summary: CoverageSummary) {
   return summary?.total?.branches?.pct;
+}
+
+function readBranchTotals(entry: CoverageSummary[string]) {
+  const covered = entry?.branches?.covered;
+  const total = entry?.branches?.total;
+
+  if (typeof covered !== "number" || typeof total !== "number") {
+    return null;
+  }
+
+  return { covered, total };
+}
+
+export function readChangedFileBranchCoverage(
+  summary: CoverageSummary,
+  changedFiles: string[],
+  cwd = process.cwd()
+) {
+  const normalizedChangedFiles = new Set(changedFiles.map(normalizeGitPath));
+  let coveredBranches = 0;
+  let totalBranches = 0;
+
+  for (const [filePath, entry] of Object.entries(summary)) {
+    if (filePath === "total") {
+      continue;
+    }
+
+    const normalizedCoveragePath = normalizeGitPath(
+      path.isAbsolute(filePath) ? path.relative(cwd, filePath) : filePath
+    );
+
+    if (!normalizedChangedFiles.has(normalizedCoveragePath)) {
+      continue;
+    }
+
+    const branchTotals = readBranchTotals(entry);
+
+    if (!branchTotals) {
+      continue;
+    }
+
+    coveredBranches += branchTotals.covered;
+    totalBranches += branchTotals.total;
+  }
+
+  if (totalBranches === 0) {
+    return null;
+  }
+
+  return Number(((coveredBranches / totalBranches) * 100).toFixed(2));
 }
 
 function normalizeGitPath(filePath: string) {
@@ -145,17 +196,58 @@ function selectJestRelatedFiles(files: string[]) {
   return files.filter((file) => /\.(c|m)?[jt]sx?$/.test(file));
 }
 
-async function readCoverageSummary(cwd: string) {
+function isTestFile(filePath: string) {
+  return /(^|\/)(tests?|__tests__)\//.test(filePath) || /\.test\.(c|m)?[jt]sx?$/.test(filePath);
+}
+
+function selectCoverageRelevantFiles(files: string[]) {
+  return files.filter((file) => !isTestFile(file));
+}
+
+async function readCoverageSummary(cwd: string, changedFiles: string[]) {
   const summary = JSON.parse(
     await readFile(path.join(cwd, COVERAGE_SUMMARY_PATH), "utf8")
   ) as CoverageSummary;
-  const totalBranchCoverage = readTotalBranchCoverage(summary);
+  const changedFileBranchCoverage = readChangedFileBranchCoverage(
+    summary,
+    changedFiles,
+    cwd
+  );
 
-  if (typeof totalBranchCoverage !== "number") {
-    throw new Error("Coverage summary is missing total branch coverage.");
+  return changedFileBranchCoverage;
+}
+
+async function shouldRunCoverage(cwd: string, changedFiles: string[]) {
+  if (selectCoverageRelevantFiles(changedFiles).length === 0) {
+    return false;
   }
 
-  return totalBranchCoverage;
+  return pathExists(path.join(cwd, COVERAGE_SUMMARY_PATH));
+}
+
+async function readLastCodexRunChangedFiles(cwd: string) {
+  try {
+    const content = await readFile(path.join(cwd, LAST_CODEX_RUN_PATH), "utf8");
+    const parsed = JSON.parse(content) as {
+      changedFiles?: unknown;
+    };
+
+    if (!Array.isArray(parsed.changedFiles)) {
+      return null;
+    }
+
+    return parsed.changedFiles
+      .filter((filePath): filePath is string => typeof filePath === "string")
+      .map(normalizeGitPath);
+  } catch {
+    return null;
+  }
+}
+
+function intersectChangedFiles(changedFiles: string[], scopedFiles: string[]) {
+  const changedFileSet = new Set(changedFiles);
+
+  return scopedFiles.filter((filePath) => changedFileSet.has(filePath));
 }
 
 export async function runCodeTaskVerification({
@@ -194,7 +286,13 @@ export async function runCodeTaskVerification({
     };
   }
 
-  const jestFiles = selectJestRelatedFiles(changedFiles);
+  const lastCodexRunChangedFiles = await readLastCodexRunChangedFiles(cwd);
+  const verificationFiles = lastCodexRunChangedFiles
+    ? intersectChangedFiles(changedFiles, lastCodexRunChangedFiles)
+    : changedFiles;
+  const coverageFiles = lastCodexRunChangedFiles ? verificationFiles : [];
+
+  const jestFiles = selectJestRelatedFiles(verificationFiles);
 
   if (jestFiles.length === 0) {
     return {
@@ -204,56 +302,74 @@ export async function runCodeTaskVerification({
     };
   }
 
+  const runCoverage = await shouldRunCoverage(cwd, coverageFiles);
   const output = await runCommand({
     cwd,
     logger,
     command: "npm",
     args: [
       "run",
-      "test",
+      runCoverage ? "test" : "test:related",
       "--",
       "--findRelatedTests",
-      ...jestFiles,
-      "--passWithNoTests"
+      ...jestFiles
     ],
-    failureLabel: "npm run test"
+    failureLabel: runCoverage ? "npm run test" : "npm run test:related"
   });
 
-  let totalBranchCoverage = null;
+  let changedFileBranchCoverage = null;
 
-  try {
-    totalBranchCoverage = await readCoverageSummary(cwd);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (output.success) {
-      return {
-        success: true,
-        coverage: null,
-        output: `npm run typecheck passed. Related Jest tests passed for changed files, but coverage summary is unavailable: ${message}`
-      };
+  if (runCoverage) {
+    try {
+      changedFileBranchCoverage = await readCoverageSummary(cwd, coverageFiles);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (output.success) {
+        return {
+          success: true,
+          coverage: null,
+          output: `npm run typecheck passed. Related Jest tests passed for changed files, but coverage summary is unavailable: ${message}`
+        };
+      }
     }
+  } else if (output.success) {
+    return {
+      success: true,
+      coverage: null,
+      output:
+        "npm run typecheck passed. Related Jest tests passed for changed files. Coverage was skipped because no eligible changed files or coverage summary were found."
+    };
   }
 
   if (!output.success) {
     return {
       success: false,
-      coverage: totalBranchCoverage,
+      coverage: changedFileBranchCoverage,
       output:
-        `npm run test failed.\n${output.output.replace(/^npm run test failed\.\n?/, "")}`.trim()
+        `${runCoverage ? "npm run test" : "npm run test:related"} failed.\n${output.output.replace(/^npm run test(?::related)? failed\.\n?/, "")}`.trim()
     };
   }
 
-  if (totalBranchCoverage <= threshold) {
+  if (typeof changedFileBranchCoverage !== "number") {
+    return {
+      success: true,
+      coverage: null,
+      output:
+        "npm run typecheck passed. Related Jest tests passed for changed files. No changed-file branch coverage was reported."
+    };
+  }
+
+  if (changedFileBranchCoverage <= threshold) {
     return {
       success: false,
-      coverage: totalBranchCoverage,
-      output: `Coverage check failed: total branch coverage ${totalBranchCoverage}% is not greater than ${threshold}%.`
+      coverage: changedFileBranchCoverage,
+      output: `Coverage check failed: changed-file branch coverage ${changedFileBranchCoverage}% is not greater than ${threshold}%.`
     };
   }
 
   return {
     success: true,
-    coverage: totalBranchCoverage,
-    output: `npm run typecheck passed. Related Jest tests passed for changed files. Total branch coverage: ${totalBranchCoverage}%.`
+    coverage: changedFileBranchCoverage,
+    output: `npm run typecheck passed. Related Jest tests passed for changed files. Changed-file branch coverage: ${changedFileBranchCoverage}%.`
   };
 }

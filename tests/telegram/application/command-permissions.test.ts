@@ -10,9 +10,27 @@ import {
 describe("telegram/application/command-permissions", () => {
   test("detects preflight install permissions", () => {
     expect(detectPreflightPermission("npm install")).toEqual({
-      action: "install dependencies",
-      reason:
-        "The task needs to add or install packages, which changes project dependencies."
+      permission: {
+        action: "install dependencies",
+        reason:
+          "The task needs to add or install packages, which changes project dependencies."
+      },
+      runOptions: {
+        bypassApprovals: true
+      }
+    });
+  });
+
+  test("detects preflight access to drive E", () => {
+    expect(detectPreflightPermission("delete E:\\temp\\old.txt")).toEqual({
+      permission: {
+        action: "access drive E:\\",
+        reason:
+          "The task needs filesystem access outside the project workspace on E:\\. Approval allows Codex to read, write, update, or delete there for this task."
+      },
+      runOptions: {
+        additionalWritableRoots: ["E:\\"]
+      }
     });
   });
 
@@ -43,6 +61,19 @@ describe("telegram/application/command-permissions", () => {
       action: "run the blocked operation",
       reason:
         "Codex reported the operation was blocked: requires elevated access"
+    });
+  });
+
+  test("detects sandbox-blocked spawn failures surfaced as EPERM", () => {
+    expect(
+      detectBlockedPermission(
+        "change the environment",
+        "spawn EPERM: operation not permitted"
+      )
+    ).toEqual({
+      action: "run the blocked operation",
+      reason:
+        "Codex reported the operation was blocked: spawn EPERM: operation not permitted"
     });
   });
 
@@ -77,5 +108,15 @@ describe("telegram/application/command-permissions", () => {
     expect(isApprovalAnswer("yes")).toBe(true);
     expect(isApprovalAnswer("deny")).toBe(true);
     expect(isApprovalAnswer("maybe")).toBe(false);
+  });
+
+  test("recognizes drive E references in shorthand and explicit drive wording", () => {
+    expect(__testables__.referencesDriveE("copy to e:/backup")).toBe(true);
+    expect(__testables__.referencesDriveE("use drive e for the export")).toBe(
+      true
+    );
+    expect(__testables__.referencesDriveE("use drive d for the export")).toBe(
+      false
+    );
   });
 });

@@ -1,9 +1,18 @@
+import { createHash } from "crypto";
 import { execFile, spawn } from "child_process";
 import { existsSync, promises as fs } from "fs";
 import path from "path";
-import type { CodexResult } from "../../types/models/code/codex.ts";
+import type {
+  CodexResult,
+  CodexRunOptions
+} from "../../types/models/code/codex.ts";
 
 let activeCodexRuns = 0;
+const LAST_CODEX_RUN_PATH = path.join(
+  process.cwd(),
+  "logs",
+  "last-codex-run.json"
+);
 
 function createResult(success: boolean, output: string): CodexResult {
   return { success, output };
@@ -15,6 +24,10 @@ function buildOutputFilePath() {
     "logs",
     `codex-last-message-${Date.now()}.txt`
   );
+}
+
+function hashFileContent(content: string | Buffer) {
+  return createHash("sha1").update(content).digest("hex");
 }
 
 function getPlatformPath() {
@@ -96,13 +109,18 @@ function resolveCodexCommand() {
   };
 }
 
-function buildCodexArgs(outputFile: string, bypassApprovals: boolean) {
+function buildCodexArgs(outputFile: string, options: CodexRunOptions) {
   const args = ["exec"];
+  const { additionalWritableRoots = [], bypassApprovals = false } = options;
 
   if (bypassApprovals) {
     args.push("--dangerously-bypass-approvals-and-sandbox");
   } else {
     args.push("--full-auto");
+
+    for (const writableRoot of additionalWritableRoots) {
+      args.push("--add-dir", writableRoot);
+    }
   }
 
   args.push("--skip-git-repo-check", "--output-last-message", outputFile, "-");
@@ -114,6 +132,13 @@ function containsCodexProcess(output: string) {
   return String(output || "")
     .toLowerCase()
     .includes("codex");
+}
+
+function writeToTerminal(
+  stream: NodeJS.WriteStream | undefined,
+  data: Buffer | string
+) {
+  stream?.write(data);
 }
 
 function checkProcessList() {
@@ -133,6 +158,79 @@ function checkProcessList() {
   });
 }
 
+function runExecFile(command: string, args: string[], cwd: string) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, { cwd }, (error, stdout = "") => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(stdout);
+    });
+  });
+}
+
+async function listRepoFiles(cwd: string) {
+  const output = await runExecFile(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    cwd
+  );
+
+  return output
+    .split("\0")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+async function buildWorkspaceSnapshot(cwd: string) {
+  const files = await listRepoFiles(cwd);
+  const snapshot = new Map<string, string | null>();
+
+  for (const relativeFile of files) {
+    const absolutePath = path.join(cwd, relativeFile);
+
+    try {
+      const content = await fs.readFile(absolutePath);
+      snapshot.set(relativeFile.replace(/\\/g, "/"), hashFileContent(content));
+    } catch {
+      snapshot.set(relativeFile.replace(/\\/g, "/"), null);
+    }
+  }
+
+  return snapshot;
+}
+
+async function safeBuildWorkspaceSnapshot(cwd = process.cwd()) {
+  try {
+    return await buildWorkspaceSnapshot(cwd);
+  } catch {
+    return new Map<string, string | null>();
+  }
+}
+
+function selectChangedSnapshotFiles(
+  before: Map<string, string | null>,
+  after: Map<string, string | null>
+) {
+  const candidateFiles = new Set([...before.keys(), ...after.keys()]);
+
+  return [...candidateFiles]
+    .filter((filePath) => before.get(filePath) !== after.get(filePath))
+    .sort();
+}
+
+async function writeLastCodexRun(changedFiles: string[]) {
+  await fs.mkdir(path.dirname(LAST_CODEX_RUN_PATH), { recursive: true });
+  await fs.writeFile(
+    LAST_CODEX_RUN_PATH,
+    JSON.stringify({ changedFiles }, null, 2),
+    "utf8"
+  );
+}
+
 async function readFinalOutput(outputFile: string, combinedOutput: string) {
   let lastMessage = "";
   try {
@@ -147,7 +245,10 @@ async function readFinalOutput(outputFile: string, combinedOutput: string) {
     // Best-effort cleanup for the generated output file.
   }
 
-  return lastMessage.trim() || combinedOutput.trim();
+  const normalizedLastMessage =
+    typeof lastMessage === "string" ? lastMessage : String(lastMessage);
+
+  return normalizedLastMessage.trim() || combinedOutput.trim();
 }
 
 export async function isCodexRunning() {
@@ -160,7 +261,7 @@ export async function isCodexRunning() {
 
 export function runCodex(
   prompt: string,
-  { bypassApprovals = false }: { bypassApprovals?: boolean } = {}
+  options: CodexRunOptions = {}
 ) {
   return new Promise<CodexResult>((resolve) => {
     console.log("Running Codex...");
@@ -181,9 +282,11 @@ export function runCodex(
       resolve(result);
     }
 
-    const args = buildCodexArgs(outputFile, bypassApprovals);
+    const args = buildCodexArgs(outputFile, options);
+    let workspaceBefore = new Map<string, string | null>();
 
     const startChild = async () => {
+      workspaceBefore = await safeBuildWorkspaceSnapshot();
       await fs.mkdir(path.dirname(outputFile), { recursive: true });
 
       return spawn(codexProcess.command, args, {
@@ -200,10 +303,12 @@ export function runCodex(
 
         child.stdout.on("data", (data) => {
           combinedOutput += data.toString();
+          writeToTerminal(process.stdout, data);
         });
 
         child.stderr.on("data", (data) => {
           combinedOutput += data.toString();
+          writeToTerminal(process.stderr, data);
         });
 
         child.on("error", (error) => {
@@ -212,6 +317,14 @@ export function runCodex(
 
         child.on("close", async (code) => {
           console.log("Codex finished with code:", code);
+          try {
+            const workspaceAfter = await safeBuildWorkspaceSnapshot();
+            await writeLastCodexRun(
+              selectChangedSnapshotFiles(workspaceBefore, workspaceAfter)
+            );
+          } catch {
+            // Verification falls back to git-detected changes if this metadata is unavailable.
+          }
           const output = await readFinalOutput(outputFile, combinedOutput);
           finish(createResult(code === 0, output));
         });

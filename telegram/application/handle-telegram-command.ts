@@ -21,7 +21,10 @@ import type {
   CommandHandlerDependencies,
   IntentPayload
 } from "../../types/telegram/application/handle-telegram-command.ts";
-import type { CodexResult } from "../../types/models/code/codex.ts";
+import type {
+  CodexResult,
+  CodexRunOptions
+} from "../../types/models/code/codex.ts";
 import type { VerificationResult } from "../../types/telegram/application/code-task-verifier.ts";
 
 function createReplyPlan(plan) {
@@ -53,6 +56,14 @@ function readIntentPayload(response: string): IntentPayload | null {
   };
 }
 
+function hasRunOptions(runOptions: CodexRunOptions | undefined) {
+  return Boolean(
+    runOptions?.bypassApprovals ||
+      (runOptions?.additionalWritableRoots &&
+        runOptions.additionalWritableRoots.length > 0)
+  );
+}
+
 export function createTelegramCommandHandler({
   sendMessage,
   askModel = callGroq,
@@ -66,6 +77,15 @@ export function createTelegramCommandHandler({
   const approvalSession = approvalSessionStore;
   let isCodeTaskRunning = false;
   let isIntentRequestRunning = false;
+
+  async function runCodexWithOptions(
+    prompt: string,
+    runOptions?: CodexRunOptions
+  ) {
+    return hasRunOptions(runOptions)
+      ? codexRunner(prompt, runOptions)
+      : codexRunner(prompt);
+  }
 
   async function sendApprovalRequest(permission: ApprovalPermission) {
     await sendMessage(
@@ -85,13 +105,15 @@ export function createTelegramCommandHandler({
     command: string,
     prompt: string,
     permission: ApprovalPermission,
-    plan: string[]
+    plan: string[],
+    runOptions: CodexRunOptions
   ) {
     await approvalSession.set({
       command,
       prompt,
       permission,
-      plan
+      plan,
+      runOptions
     });
   }
 
@@ -100,9 +122,10 @@ export function createTelegramCommandHandler({
       `Temporary permission granted. Retrying to ${savedSession.permission.action}...`
     );
 
-    const retriedResult = await codexRunner(savedSession.prompt, {
-      bypassApprovals: true
-    });
+    const retriedResult = await runCodexWithOptions(
+      savedSession.prompt,
+      savedSession.runOptions
+    );
     await taskLogger({
       plan: savedSession.plan,
       output: retriedResult.output
@@ -113,8 +136,8 @@ export function createTelegramCommandHandler({
       savedSession.plan,
       retriedResult,
       {
-        bypassApprovals: true,
-        failurePrefix: "Codex failed after retry"
+        failurePrefix: "Codex failed after retry",
+        runOptions: savedSession.runOptions || {}
       }
     );
   }
@@ -123,7 +146,13 @@ export function createTelegramCommandHandler({
     command: string,
     plan: string[],
     result: CodexResult,
-    { bypassApprovals = false, failurePrefix = "Codex failed" } = {}
+    {
+      failurePrefix = "Codex failed",
+      runOptions = {}
+    }: {
+      failurePrefix?: string;
+      runOptions?: CodexRunOptions;
+    } = {}
   ) {
     if (!result.success) {
       await sendCodexResult(result, failurePrefix);
@@ -163,9 +192,7 @@ export function createTelegramCommandHandler({
         verificationOutput: verification.output
       });
 
-      latestResult = bypassApprovals
-        ? await codexRunner(repairPrompt, { bypassApprovals: true })
-        : await codexRunner(repairPrompt);
+      latestResult = await runCodexWithOptions(repairPrompt, runOptions);
       await taskLogger({
         plan,
         output: latestResult.output
@@ -222,8 +249,14 @@ export function createTelegramCommandHandler({
       const preflightPermission = detectPreflightPermission(command);
 
       if (preflightPermission) {
-        await saveApprovalSession(command, prompt, preflightPermission, plan);
-        await sendApprovalRequest(preflightPermission);
+        await saveApprovalSession(
+          command,
+          prompt,
+          preflightPermission.permission,
+          plan,
+          preflightPermission.runOptions
+        );
+        await sendApprovalRequest(preflightPermission.permission);
         return;
       }
 
@@ -236,7 +269,13 @@ export function createTelegramCommandHandler({
       const blockedPermission = detectBlockedPermission(command, result.output);
 
       if (blockedPermission) {
-        await saveApprovalSession(command, prompt, blockedPermission, plan);
+        await saveApprovalSession(
+          command,
+          prompt,
+          blockedPermission,
+          plan,
+          { bypassApprovals: true }
+        );
         await sendApprovalRequest(blockedPermission);
         return;
       }

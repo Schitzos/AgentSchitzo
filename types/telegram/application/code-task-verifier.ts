@@ -1,9 +1,20 @@
 export type CoverageSummary = {
   total?: {
     branches?: {
+      covered?: number;
+      total?: number;
       pct?: number;
     };
   };
+  [filePath: string]:
+    | {
+        branches?: {
+          covered?: number;
+          total?: number;
+          pct?: number;
+        };
+      }
+    | undefined;
 };
 
 export type VerificationCommandResult = {

@@ -6,6 +6,8 @@ export function resolveApprovalSessionPath() {
 }
 
 function isValidApprovalSession(session) {
+  const additionalWritableRoots = session?.runOptions?.additionalWritableRoots;
+
   return (
     session &&
     typeof session === "object" &&
@@ -14,12 +16,20 @@ function isValidApprovalSession(session) {
     session.permission &&
     typeof session.permission.action === "string" &&
     typeof session.permission.reason === "string" &&
-    Array.isArray(session.plan)
+    Array.isArray(session.plan) &&
+    (session.runOptions == null ||
+      (typeof session.runOptions === "object" &&
+        (session.runOptions.bypassApprovals == null ||
+          typeof session.runOptions.bypassApprovals === "boolean") &&
+        (session.runOptions.additionalWritableRoots == null ||
+          (Array.isArray(additionalWritableRoots) &&
+            additionalWritableRoots.every((root) => typeof root === "string")))))
   );
 }
 
 export function createApprovalSessionStore({
-  sessionFilePath = resolveApprovalSessionPath()
+  sessionFilePath = resolveApprovalSessionPath(),
+  fileSystem = fs
 } = {}) {
   let session = null;
   let hasLoaded = false;
@@ -32,7 +42,7 @@ export function createApprovalSessionStore({
     hasLoaded = true;
 
     try {
-      const raw = await fs.readFile(sessionFilePath, "utf8");
+      const raw = await fileSystem.readFile(sessionFilePath, "utf8");
       const parsed = JSON.parse(raw);
       session = isValidApprovalSession(parsed) ? parsed : null;
     } catch {
@@ -50,8 +60,8 @@ export function createApprovalSessionStore({
     async set(value) {
       session = value;
       hasLoaded = true;
-      await fs.mkdir(path.dirname(sessionFilePath), { recursive: true });
-      await fs.writeFile(sessionFilePath, JSON.stringify(value), "utf8");
+      await fileSystem.mkdir(path.dirname(sessionFilePath), { recursive: true });
+      await fileSystem.writeFile(sessionFilePath, JSON.stringify(value), "utf8");
     },
 
     async clear() {
@@ -60,7 +70,7 @@ export function createApprovalSessionStore({
       hasLoaded = true;
 
       try {
-        await fs.unlink(sessionFilePath);
+        await fileSystem.unlink(sessionFilePath);
       } catch {
         // Best-effort cleanup for the pending approval file.
       }

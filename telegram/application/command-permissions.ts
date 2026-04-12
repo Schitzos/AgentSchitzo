@@ -2,11 +2,14 @@ const INSTALL_PATTERN =
   /\b(npm|pnpm|yarn|bun)\s+(install|add)\b|\binstall\b[\s\S]*\b(lib|library|package|dependency|dependencies)\b/;
 const DELETE_PATTERN = /\b(delete|remove|remove-item|rm|unlink)\b/;
 const MOVE_PATTERN = /\b(rename|ren|move|move-item|mv)\b/;
+const DRIVE_E_PATTERN = /\bdrive\s+e\b|\be:(?:[\\/]|$)/;
 
 const PERMISSION_SIGNAL_PATTERNS = [
   "approval",
   "permission",
   "sandbox",
+  "eperm",
+  "operation not permitted",
   "access is denied",
   "blocked by policy",
   "rejected: blocked by policy",
@@ -17,7 +20,15 @@ const PERMISSION_SIGNAL_PATTERNS = [
 export const YES_ANSWERS = new Set(["y", "yes", "approve", "approved"]);
 export const NO_ANSWERS = new Set(["n", "no", "deny", "denied"]);
 
+function referencesDriveE(text) {
+  return DRIVE_E_PATTERN.test(text);
+}
+
 function findPermissionAction(text) {
+  if (referencesDriveE(text)) {
+    return "access drive E:\\";
+  }
+
   if (INSTALL_PATTERN.test(text)) {
     return "install dependencies";
   }
@@ -34,6 +45,10 @@ function findPermissionAction(text) {
 }
 
 function findPermissionReason(action, output = "") {
+  if (action === "access drive E:\\") {
+    return "The task needs filesystem access outside the project workspace on E:\\. Approval allows Codex to read, write, update, or delete there for this task.";
+  }
+
   if (action === "install dependencies") {
     return "The task needs to add or install packages, which changes project dependencies.";
   }
@@ -58,13 +73,28 @@ function findPermissionReason(action, output = "") {
 }
 
 export const __testables__ = {
-  findPermissionReason
+  findPermissionReason,
+  referencesDriveE
 };
 
 export function detectPreflightPermission(command) {
-  const action = findPermissionAction(command.toLowerCase());
+  const normalizedCommand = command.toLowerCase();
+  const action = findPermissionAction(normalizedCommand);
 
-  return action ? { action, reason: findPermissionReason(action) } : null;
+  if (!action) {
+    return null;
+  }
+
+  return {
+    permission: {
+      action,
+      reason: findPermissionReason(action)
+    },
+    runOptions:
+      action === "access drive E:\\"
+        ? { additionalWritableRoots: ["E:\\"] }
+        : { bypassApprovals: true }
+  };
 }
 
 export function detectBlockedPermission(command, output) {

@@ -1,4 +1,4 @@
-import type { CodexResult } from "../../models/code/codex.ts";
+import type { CodexResult, CodexRunOptions } from "../../models/code/codex.ts";
 import type { VerificationResult } from "./code-task-verifier.ts";
 
 export type ApprovalPermission = {
@@ -11,6 +11,7 @@ export type ApprovalSession = {
   prompt: string;
   permission: ApprovalPermission;
   plan: string[];
+  runOptions?: CodexRunOptions;
 };
 
 export type IntentPayload = {
@@ -25,7 +26,7 @@ export type CommandHandlerDependencies = {
   askModel?: (prompt: string) => Promise<string | null>;
   codexRunner?: (
     prompt: string,
-    options?: { bypassApprovals?: boolean }
+    options?: CodexRunOptions
   ) => Promise<CodexResult>;
   codexRunChecker?: () => Promise<boolean>;
   codeTaskVerifier?: () => Promise<VerificationResult>;

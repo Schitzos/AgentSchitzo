@@ -8,6 +8,7 @@ const existsSyncMock = jest.fn();
 const mkdirMock = jest.fn();
 const readFileMock = jest.fn();
 const unlinkMock = jest.fn();
+const writeFileMock = jest.fn();
 
 jest.unstable_mockModule("child_process", () => ({
   execFile: execFileMock,
@@ -19,11 +20,18 @@ jest.unstable_mockModule("fs", () => ({
   promises: {
     mkdir: mkdirMock,
     readFile: readFileMock,
-    unlink: unlinkMock
+    unlink: unlinkMock,
+    writeFile: writeFileMock
   }
 }));
 
 const consoleLogSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+const stdoutWriteSpy = jest
+  .spyOn(process.stdout, "write")
+  .mockImplementation(() => true);
+const stderrWriteSpy = jest
+  .spyOn(process.stderr, "write")
+  .mockImplementation(() => true);
 
 const { isCodexRunning, runCodex } = await import(
   "../../../models/code/codex.js"
@@ -40,6 +48,9 @@ function createChildProcessMock() {
 async function flushAsyncSetup() {
   await Promise.resolve();
   await Promise.resolve();
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 describe("runCodex", () => {
@@ -54,9 +65,18 @@ describe("runCodex", () => {
     mkdirMock.mockReset();
     readFileMock.mockReset();
     unlinkMock.mockReset();
+    writeFileMock.mockReset();
     consoleLogSpy.mockClear();
+    stdoutWriteSpy.mockClear();
+    stderrWriteSpy.mockClear();
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      const resolvedCallback =
+        typeof options === "function" ? options : callback;
+      resolvedCallback(null, "");
+    });
     mkdirMock.mockResolvedValue(undefined);
     unlinkMock.mockResolvedValue(undefined);
+    writeFileMock.mockResolvedValue(undefined);
     Object.defineProperty(process, "platform", { value: originalPlatform });
     process.env.PATH = originalPath;
     process.env.HOME = originalHome;
@@ -70,7 +90,13 @@ describe("runCodex", () => {
       (filePath) => filePath === "C:\\nvm4w\\nodejs\\codex.cmd"
     );
     spawnMock.mockReturnValue(child);
-    readFileMock.mockResolvedValue("Task executed by Codex");
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("before"))
+      .mockResolvedValueOnce(Buffer.from("after"))
+      .mockResolvedValueOnce("Task executed by Codex");
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
 
     const resultPromise = runCodex(prompt);
 
@@ -99,13 +125,24 @@ describe("runCodex", () => {
       output: "Task executed by Codex"
     });
     expect(unlinkMock).toHaveBeenCalledTimes(1);
+    expect(writeFileMock).toHaveBeenCalledWith(
+      expect.stringMatching(/logs[\\/]+last-codex-run\.json$/),
+      JSON.stringify({ changedFiles: ["models/code/codex.ts"] }, null, 2),
+      "utf8"
+    );
   });
 
   test("falls back to combined output when no last-message file is available", async () => {
     const child = createChildProcessMock();
 
     spawnMock.mockReturnValue(child);
-    readFileMock.mockRejectedValue(new Error("missing"));
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockRejectedValueOnce(new Error("missing"));
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
 
     const resultPromise = runCodex("fix bug");
     await flushAsyncSetup();
@@ -117,6 +154,31 @@ describe("runCodex", () => {
     await expect(resultPromise).resolves.toEqual({
       success: false,
       output: "stdout text stderr text"
+    });
+    expect(stdoutWriteSpy).toHaveBeenCalledWith(Buffer.from("stdout text"));
+    expect(stderrWriteSpy).toHaveBeenCalledWith(Buffer.from(" stderr text"));
+  });
+
+  test("stringifies a non-string last-message payload before returning it", async () => {
+    const child = createChildProcessMock();
+
+    spawnMock.mockReturnValue(child);
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce(Buffer.from("buffer output"));
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
+
+    const resultPromise = runCodex("ship it");
+    await flushAsyncSetup();
+
+    child.emit("close", 0);
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      output: "buffer output"
     });
   });
 
@@ -319,7 +381,13 @@ describe("runCodex", () => {
     const child = createChildProcessMock();
 
     spawnMock.mockReturnValue(child);
-    readFileMock.mockResolvedValue("bypassed");
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce("bypassed");
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
 
     const resultPromise = runCodex("install package", {
       bypassApprovals: true
@@ -335,6 +403,37 @@ describe("runCodex", () => {
     await expect(resultPromise).resolves.toEqual({
       success: true,
       output: "bypassed"
+    });
+  });
+
+  test("adds an extra writable directory when a sandboxed approval grants drive access", async () => {
+    const child = createChildProcessMock();
+
+    spawnMock.mockReturnValue(child);
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce(Buffer.from("same"))
+      .mockResolvedValueOnce("sandboxed");
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
+
+    const resultPromise = runCodex("clean E drive folder", {
+      additionalWritableRoots: ["E:\\"]
+    });
+    await flushAsyncSetup();
+    const [, args] = spawnMock.mock.calls[0];
+
+    expect(args).toContain("--full-auto");
+    expect(args).toContain("--add-dir");
+    expect(args).toContain("E:\\");
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+
+    child.emit("close", 0);
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      output: "sandboxed"
     });
   });
 
@@ -365,6 +464,59 @@ describe("runCodex", () => {
       output: "mkdir blocked"
     });
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  test("continues when the workspace snapshot cannot be listed before Codex starts", async () => {
+    const child = createChildProcessMock();
+
+    spawnMock.mockReturnValue(child);
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(new Error("git failed"));
+    });
+    readFileMock.mockResolvedValue("done");
+
+    const resultPromise = runCodex("ship it");
+    await flushAsyncSetup();
+
+    child.emit("close", 0);
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      output: "done"
+    });
+    expect(writeFileMock).toHaveBeenCalledWith(
+      expect.stringMatching(/logs[\\/]+last-codex-run\.json$/),
+      JSON.stringify({ changedFiles: [] }, null, 2),
+      "utf8"
+    );
+  });
+
+  test("tracks unreadable repository files as null in workspace snapshots", async () => {
+    const child = createChildProcessMock();
+
+    spawnMock.mockReturnValue(child);
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "missing-file.ts\0");
+    });
+    readFileMock
+      .mockRejectedValueOnce(new Error("missing file"))
+      .mockRejectedValueOnce(new Error("missing file"))
+      .mockResolvedValueOnce("done");
+
+    const resultPromise = runCodex("ship it");
+    await flushAsyncSetup();
+
+    child.emit("close", 0);
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      output: "done"
+    });
+    expect(writeFileMock).toHaveBeenCalledWith(
+      expect.stringMatching(/logs[\\/]+last-codex-run\.json$/),
+      JSON.stringify({ changedFiles: [] }, null, 2),
+      "utf8"
+    );
   });
 
   test("reports codex as running when the local runner currently has an active process", async () => {
@@ -424,5 +576,29 @@ describe("runCodex", () => {
     });
 
     await expect(isCodexRunning()).resolves.toBe(false);
+  });
+
+  test("continues when it cannot persist the latest changed-file manifest", async () => {
+    const child = createChildProcessMock();
+
+    spawnMock.mockReturnValue(child);
+    readFileMock
+      .mockResolvedValueOnce(Buffer.from("before"))
+      .mockResolvedValueOnce(Buffer.from("after"))
+      .mockResolvedValueOnce("done");
+    writeFileMock.mockRejectedValue(new Error("disk full"));
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      callback(null, "models/code/codex.ts\0");
+    });
+
+    const resultPromise = runCodex("ship it");
+    await flushAsyncSetup();
+
+    child.emit("close", 0);
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      output: "done"
+    });
   });
 });

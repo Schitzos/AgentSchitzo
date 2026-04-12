@@ -56,7 +56,7 @@ describe("telegram/application/handle-telegram-command", () => {
       success: true,
       coverage: 91,
       output:
-        "npm run typecheck passed. Related Jest tests passed for changed files. Total branch coverage: 91%."
+        "npm run typecheck passed. Related Jest tests passed for changed files. Changed-file branch coverage: 91%."
     });
   });
 
@@ -170,13 +170,13 @@ describe("telegram/application/handle-telegram-command", () => {
         success: false,
         coverage: 90,
         output:
-          "Coverage check failed: total branch coverage 90% is not greater than 90%."
+          "Coverage check failed: changed-file branch coverage 90% is not greater than 90%."
       })
       .mockResolvedValueOnce({
         success: true,
         coverage: 91,
         output:
-          "npm run typecheck passed. Related Jest tests passed for changed files. Total branch coverage: 91%."
+          "npm run typecheck passed. Related Jest tests passed for changed files. Changed-file branch coverage: 91%."
       });
 
     await handler("write tests");
@@ -193,7 +193,7 @@ describe("telegram/application/handle-telegram-command", () => {
         "Task executed by Codex",
         "",
         "Verification failure:",
-        "Coverage check failed: total branch coverage 90% is not greater than 90%.",
+        "Coverage check failed: changed-file branch coverage 90% is not greater than 90%.",
         "",
         "Fix the codebase so `npm run typecheck` passes and Jest verification for changed files passes.",
         "Keep changed-file branch coverage greater than 90% when coverage is reported.",
@@ -236,14 +236,14 @@ describe("telegram/application/handle-telegram-command", () => {
       success: false,
       coverage: 70,
       output:
-        "Coverage check failed: total branch coverage 70% is not greater than 90%."
+        "Coverage check failed: changed-file branch coverage 70% is not greater than 90%."
     });
 
     await handler("write tests");
 
     expect(sendMessage).toHaveBeenNthCalledWith(
       5,
-      "Codex result after failed attempts:\nAttempt two fix.\n\nCoverage check failed: total branch coverage 70% is not greater than 90%.\n\nCoverage: 70%"
+      "Codex result after failed attempts:\nAttempt two fix.\n\nCoverage check failed: changed-file branch coverage 70% is not greater than 90%.\n\nCoverage: 70%"
     );
     expect(codeTaskVerifier).toHaveBeenCalledTimes(3);
   });
@@ -261,7 +261,7 @@ describe("telegram/application/handle-telegram-command", () => {
       success: false,
       coverage: 88,
       output:
-        "Coverage check failed: total branch coverage 88% is not greater than 90%."
+        "Coverage check failed: changed-file branch coverage 88% is not greater than 90%."
     });
 
     await handler("write tests");
@@ -353,6 +353,30 @@ describe("telegram/application/handle-telegram-command", () => {
         "Reply yes to allow it once, or no to stop the current session."
       ].join("\n")
     );
+  });
+
+  test("asks for telegram approval when codex fails with a sandbox-blocked EPERM spawn error", async () => {
+    const handler = createHandler();
+
+    askModel.mockResolvedValue(
+      '{"intent":"code","reply":"","plan":["Modify the environment"]}'
+    );
+    codexRunner.mockResolvedValue({
+      success: false,
+      output: "spawn EPERM: operation not permitted"
+    });
+
+    await handler("change the environment");
+
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      3,
+      [
+        "Codex needs temporary permission to run the blocked operation.",
+        "Reason: Codex reported the operation was blocked: spawn EPERM: operation not permitted",
+        "Reply yes to allow it once, or no to stop the current session."
+      ].join("\n")
+    );
+    expect(codeTaskVerifier).not.toHaveBeenCalled();
   });
 
   test("retries once with elevated codex permissions after a yes reply", async () => {
@@ -480,13 +504,13 @@ describe("telegram/application/handle-telegram-command", () => {
         success: false,
         coverage: 89,
         output:
-          "Coverage check failed: total branch coverage 89% is not greater than 90%."
+          "Coverage check failed: changed-file branch coverage 89% is not greater than 90%."
       })
       .mockResolvedValueOnce({
         success: true,
         coverage: 100,
         output:
-          "npm run typecheck passed. Related Jest tests passed for changed files. Total branch coverage: 100%."
+          "npm run typecheck passed. Related Jest tests passed for changed files. Changed-file branch coverage: 100%."
       });
 
     await handler("install a new lib");
@@ -504,7 +528,7 @@ describe("telegram/application/handle-telegram-command", () => {
         "Installed dependencies.",
         "",
         "Verification failure:",
-        "Coverage check failed: total branch coverage 89% is not greater than 90%.",
+        "Coverage check failed: changed-file branch coverage 89% is not greater than 90%.",
         "",
         "Fix the codebase so `npm run typecheck` passes and Jest verification for changed files passes.",
         "Keep changed-file branch coverage greater than 90% when coverage is reported.",
@@ -533,6 +557,63 @@ describe("telegram/application/handle-telegram-command", () => {
       "Permission denied. Stopping the current session."
     );
     expect(codexRunner).not.toHaveBeenCalled();
+  });
+
+  test("asks for approval before granting Codex access to drive E", async () => {
+    const handler = createHandler();
+
+    askModel.mockResolvedValue(
+      '{"intent":"code","reply":"","plan":["Delete the old export"]}'
+    );
+
+    await handler("delete E:\\exports\\old.zip");
+
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      [
+        "Codex needs temporary permission to access drive E:\\.",
+        "Reason: The task needs filesystem access outside the project workspace on E:\\. Approval allows Codex to read, write, update, or delete there for this task.",
+        "Reply yes to allow it once, or no to stop the current session."
+      ].join("\n")
+    );
+    expect(codexRunner).not.toHaveBeenCalled();
+  });
+
+  test("retries an approved drive E task with sandboxed extra directory access instead of bypassing approvals", async () => {
+    const handler = createHandler();
+
+    askModel.mockResolvedValue(
+      '{"intent":"code","reply":"","plan":["Delete the old export"]}'
+    );
+    codexRunner.mockResolvedValueOnce({
+      success: true,
+      output: "Removed the export."
+    });
+
+    await handler("delete E:\\exports\\old.zip");
+    await handler("yes");
+
+    expect(codexRunner).toHaveBeenNthCalledWith(
+      1,
+      [
+        "User request:",
+        "delete E:\\exports\\old.zip",
+        "",
+        "Suggested plan from Model:",
+        "Delete the old export",
+        "",
+        "Execute the task. Use the user request as source of truth. Treat the plan as guidance, not a hard constraint."
+      ].join("\n"),
+      { additionalWritableRoots: ["E:\\"] }
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      3,
+      "Temporary permission granted. Retrying to access drive E:\\..."
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      4,
+      "Codex done:\nRemoved the export.\n\nCoverage: 91%"
+    );
   });
 
   test("stops the current session after a deny reply", async () => {
@@ -604,6 +685,47 @@ describe("telegram/application/handle-telegram-command", () => {
     expect(codexRunner).not.toHaveBeenCalled();
   });
 
+  test("retries a saved approval session without run options using the plain codex invocation", async () => {
+    approvalSessionStore = {
+      get: jest.fn().mockResolvedValue({
+        command: "write tests"
+      }),
+      set: jest.fn(),
+      clear: jest.fn().mockResolvedValue({
+        command: "write tests",
+        prompt: "retry prompt",
+        permission: {
+          action: "run the blocked operation",
+          reason: "reason"
+        },
+        plan: ["Write tests"]
+      })
+    };
+    const handler = createHandler();
+
+    codexRunner.mockResolvedValueOnce({
+      success: true,
+      output: "Retried without extra permissions."
+    });
+
+    await handler("yes");
+
+    expect(codexRunner).toHaveBeenCalledWith("retry prompt");
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      "Temporary permission granted. Retrying to run the blocked operation..."
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      "Codex done:\nRetried without extra permissions.\n\nCoverage: 91%"
+    );
+    expect(taskLogger).toHaveBeenCalledWith({
+      plan: ["Write tests"],
+      output: "Retried without extra permissions."
+    });
+    expect(codeTaskVerifier).toHaveBeenCalledTimes(1);
+  });
+
   test("reports unknown intent", async () => {
     const handler = createHandler();
 
@@ -612,6 +734,21 @@ describe("telegram/application/handle-telegram-command", () => {
     await handler("something else");
 
     expect(sendMessage).toHaveBeenCalledWith("Unknown intent.");
+  });
+
+  test("can handle a chat request while relying on the default non-chat dependencies", async () => {
+    const handler = createTelegramCommandHandler({
+      sendMessage,
+      askModel,
+      approvalSessionStore,
+      logger
+    });
+
+    askModel.mockResolvedValue('{"intent":"chat","reply":"Fallback path"}');
+
+    await handler("hello");
+
+    expect(sendMessage).toHaveBeenCalledWith("Fallback path");
   });
 
   test("defaults missing intent and reply fields for chat payloads", async () => {
