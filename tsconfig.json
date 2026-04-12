@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node", "jest"],
+    "allowJs": false,
+    "checkJs": false,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@root/*": ["*"]
+    },
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "types/**/*.ts",
+    "telegram-listener.ts",
+    "models/**/*.ts",
+    "telegram/**/*.ts",
+    "tests/**/*.ts",
+    "utils/**/*.ts",
+    "jest.config.ts"
+  ],
+  "exclude": ["coverage", "dist", "node_modules"]
+}

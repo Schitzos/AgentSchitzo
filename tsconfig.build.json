@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "sourceMap": false,
+    "declaration": false,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": [
+    "types/**/*.ts",
+    "telegram-listener.ts",
+    "models/**/*.ts",
+    "telegram/**/*.ts",
+    "utils/env.ts"
+  ],
+  "exclude": ["tests", "coverage", "dist", "node_modules"]
+}

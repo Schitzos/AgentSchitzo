@@ -1,0 +1,4 @@
+coverage/
+logs/
+node_modules/
+tests/
