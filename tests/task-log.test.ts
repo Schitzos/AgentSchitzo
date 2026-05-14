@@ -50,7 +50,7 @@ describe("normalizePlan", () => {
 describe("formatLogDate", () => {
   it("formats date correctly", () => {
     const d = new Date(2025, 0, 5, 9, 3); // Jan 5, 2025 09:03
-    expect(formatLogDate(d)).toBe("01/05/2025 09:03");
+    expect(formatLogDate(d)).toBe("05 Jan 2025");
   });
 });
 

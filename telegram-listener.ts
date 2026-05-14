@@ -162,6 +162,15 @@ const isMainModule = process.argv[1]?.endsWith("telegram-listener.ts") ||
 
 /* istanbul ignore next -- bootstrap code not unit-testable */
 if (isMainModule) {
+  const LOCK_FILE = path.join(process.cwd(), "logs", ".pid");
+  if (fs.existsSync(LOCK_FILE)) {
+    const oldPid = parseInt(fs.readFileSync(LOCK_FILE, "utf8"), 10);
+    try { process.kill(oldPid, 0); console.error(`Already running (pid ${oldPid}). Exiting.`); process.exit(1); } catch { /* stale lock */ }
+  }
+  fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
+  fs.writeFileSync(LOCK_FILE, String(process.pid));
+  process.on("exit", () => { try { fs.unlinkSync(LOCK_FILE); } catch {} });
+
   const TELEGRAM_TOKEN = readRequiredEnv("TELEGRAM_TOKEN");
   const TELEGRAM_CHAT_ID = readRequiredEnv("TELEGRAM_CHAT_ID");
   const POLL_INTERVAL = readEnvNumber("TELEGRAM_POLL_INTERVAL_MS", 3000);
