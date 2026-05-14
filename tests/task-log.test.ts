@@ -9,6 +9,7 @@ import {
   formatLogDate,
   readTaskLogEntries,
   appendTaskLog,
+  searchTaskLog,
 } from "../telegram/infrastructure/task-log.ts";
 
 describe("resolveTaskLogPath", () => {
@@ -108,6 +109,7 @@ describe("appendTaskLog", () => {
   it("creates file and appends entry", async () => {
     const logFile = path.join(tmpDir, "sub", "log.json");
     await appendTaskLog({
+      prompt: "fix bug",
       plan: ["step1"],
       output: "done",
       logFilePath: logFile,
@@ -117,36 +119,79 @@ describe("appendTaskLog", () => {
     expect(content).toHaveLength(1);
     expect(content[0].plan).toBe("step1");
     expect(content[0].output).toBe("done");
-    expect(content[0].date).toBe("06/01/2025 12:30");
+    expect(content[0].prompt).toBe("fix bug");
+    expect(content[0].timestamp).toBeDefined();
+    expect(content[0].status).toBe("done");
   });
 
   it("appends to existing entries", async () => {
     const logFile = path.join(tmpDir, "log.json");
-    fs.writeFileSync(logFile, JSON.stringify([{ date: "x", plan: "p", output: "o" }]));
-    await appendTaskLog({ plan: "new", output: "out", logFilePath: logFile });
+    fs.writeFileSync(logFile, JSON.stringify([{ id: 1, timestamp: "x", prompt: "old", plan: "p", output: "o", status: "done", filesChanged: [], testsPassed: null, durationMs: 0 }]));
+    await appendTaskLog({ prompt: "new prompt", plan: "new", output: "out", logFilePath: logFile });
     const content = JSON.parse(fs.readFileSync(logFile, "utf8"));
     expect(content).toHaveLength(2);
   });
 
   it("uses default now parameter", async () => {
     const logFile = path.join(tmpDir, "defaults.json");
-    await appendTaskLog({ plan: "p", output: "o", logFilePath: logFile });
+    await appendTaskLog({ prompt: "test", plan: "p", output: "o", logFilePath: logFile });
     const content = JSON.parse(fs.readFileSync(logFile, "utf8"));
-    expect(content[0].date).toMatch(/\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}/);
+    expect(content[0].timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("uses default logFilePath when not provided", async () => {
     const defaultPath = resolveTaskLogPath();
-    await appendTaskLog({ plan: "default-test", output: "ok" });
+    await appendTaskLog({ prompt: "default-test", plan: "default-test", output: "ok" });
     const content = JSON.parse(fs.readFileSync(defaultPath, "utf8"));
-    const entry = content.find((e: { plan: string }) => e.plan === "default-test");
+    const entry = content.find((e: { prompt: string }) => e.prompt === "default-test");
     expect(entry).toBeDefined();
     // Clean up
-    const filtered = content.filter((e: { plan: string }) => e.plan !== "default-test");
+    const filtered = content.filter((e: { prompt: string }) => e.prompt !== "default-test");
     if (filtered.length > 0) {
       fs.writeFileSync(defaultPath, JSON.stringify(filtered));
     } else {
       fs.unlinkSync(defaultPath);
     }
+  });
+});
+
+describe("searchTaskLog", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tasklog-search-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it("returns last N entries when no query", async () => {
+    const logFile = path.join(tmpDir, "log.json");
+    const entries = Array.from({ length: 10 }, (_, i) => ({
+      id: i + 1, timestamp: new Date().toISOString(), prompt: `task ${i}`,
+      plan: "plan", output: "out", status: "done", filesChanged: [], testsPassed: true, durationMs: 100,
+    }));
+    fs.writeFileSync(logFile, JSON.stringify(entries));
+    const results = await searchTaskLog("", logFile, 3);
+    expect(results).toHaveLength(3);
+    expect(results[0].id).toBe(8);
+  });
+
+  it("filters by query in prompt", async () => {
+    const logFile = path.join(tmpDir, "log.json");
+    const entries = [
+      { id: 1, timestamp: "", prompt: "fix auth bug", plan: "", output: "", status: "done", filesChanged: [], testsPassed: true, durationMs: 0 },
+      { id: 2, timestamp: "", prompt: "add feature", plan: "", output: "", status: "done", filesChanged: [], testsPassed: true, durationMs: 0 },
+    ];
+    fs.writeFileSync(logFile, JSON.stringify(entries));
+    const results = await searchTaskLog("auth", logFile);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe(1);
+  });
+
+  it("returns empty for non-existent file", async () => {
+    const results = await searchTaskLog("", path.join(tmpDir, "nope.json"));
+    expect(results).toHaveLength(0);
   });
 });

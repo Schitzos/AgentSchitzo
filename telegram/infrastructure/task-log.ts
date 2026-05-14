@@ -1,6 +1,18 @@
 import { promises as fs } from "fs";
 import path from "path";
 
+export interface TaskLogEntry {
+  id: number;
+  timestamp: string;
+  prompt: string;
+  plan: string;
+  output: string;
+  status: "done" | "failed";
+  filesChanged: string[];
+  testsPassed: boolean | null;
+  durationMs: number;
+}
+
 export function resolveTaskLogPath(): string {
   return path.join(process.cwd(), "logs", "task-log.json");
 }
@@ -26,7 +38,7 @@ export function formatLogDate(date: Date): string {
   return `${month}/${day}/${year} ${hours}:${minutes}`;
 }
 
-export async function readTaskLogEntries(logFilePath: string): Promise<unknown[]> {
+export async function readTaskLogEntries(logFilePath: string): Promise<TaskLogEntry[]> {
   try {
     const content = await fs.readFile(logFilePath, "utf8");
 
@@ -46,24 +58,60 @@ export async function readTaskLogEntries(logFilePath: string): Promise<unknown[]
 }
 
 export async function appendTaskLog({
+  prompt,
   plan,
   output,
+  status = "done",
+  filesChanged = [],
+  testsPassed = null,
+  startedAt,
   /* istanbul ignore next */ logFilePath = resolveTaskLogPath(),
   /* istanbul ignore next */ now = new Date(),
 }: {
+  prompt: string;
   plan: unknown;
   output: unknown;
+  status?: "done" | "failed";
+  filesChanged?: string[];
+  testsPassed?: boolean | null;
+  startedAt?: number;
   logFilePath?: string;
   now?: Date;
 }): Promise<void> {
   await fs.mkdir(path.dirname(logFilePath), { recursive: true });
 
   const entries = await readTaskLogEntries(logFilePath);
-  entries.push({
-    date: formatLogDate(now),
+  const entry: TaskLogEntry = {
+    id: entries.length + 1,
+    timestamp: now.toISOString(),
+    prompt: normalizeText(prompt),
     plan: normalizePlan(plan),
     output: normalizeText(output),
-  });
+    status,
+    filesChanged,
+    testsPassed,
+    durationMs: startedAt ? now.getTime() - startedAt : 0,
+  };
+  entries.push(entry);
 
   await fs.writeFile(logFilePath, JSON.stringify(entries, null, 2), "utf8");
+}
+
+export async function searchTaskLog(
+  query: string,
+  /* istanbul ignore next */ logFilePath = resolveTaskLogPath(),
+  limit = 5
+): Promise<TaskLogEntry[]> {
+  const entries = await readTaskLogEntries(logFilePath);
+  if (!query) return entries.slice(-limit);
+
+  const lower = query.toLowerCase();
+  return entries
+    .filter(
+      (e) =>
+        e.prompt.toLowerCase().includes(lower) ||
+        e.plan.toLowerCase().includes(lower) ||
+        e.output.toLowerCase().includes(lower)
+    )
+    .slice(-limit);
 }

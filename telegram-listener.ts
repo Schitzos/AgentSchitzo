@@ -188,8 +188,7 @@ if (isMainModule) {
         const updates = (await api.getUpdates(offset)) as TelegramUpdate[];
         for (const update of updates) {
           offset = update.update_id;
-          // Don't await — process in background so polling never blocks
-          processUpdate(update, ctx, send, { token: TELEGRAM_TOKEN, chatId: TELEGRAM_CHAT_ID }).catch(() => {});
+          await processUpdate(update, ctx, send, { token: TELEGRAM_TOKEN, chatId: TELEGRAM_CHAT_ID });
         }
       } catch { /* network error, retry next tick */ }
       setTimeout(poll, POLL_INTERVAL);
