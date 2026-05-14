@@ -12,7 +12,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "strict": false,
+    "strict": true,
     "noEmit": true,
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
@@ -22,13 +22,12 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "types/**/*.ts",
     "telegram-listener.ts",
-    "models/**/*.ts",
+    "adapters/**/*.ts",
+    "session/**/*.ts",
     "telegram/**/*.ts",
-    "tests/**/*.ts",
     "utils/**/*.ts",
-    "jest.config.ts"
+    "tests/**/*.ts"
   ],
-  "exclude": ["coverage", "dist", "node_modules"]
+  "exclude": ["coverage", "dist", "node_modules", "archive"]
 }

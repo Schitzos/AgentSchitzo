@@ -1,14 +1,22 @@
-import type {
-  TelegramApiDependencies,
-  TelegramPayload
-} from "../../types/telegram/infrastructure/telegram-api.ts";
+export type TelegramPayload = {
+  ok?: boolean;
+  result?: unknown[];
+};
+
+export type TelegramApiDependencies = {
+  fetchFn?: typeof fetch;
+  token: string;
+  chatId: string;
+  logger?: Pick<Console, "log">;
+  requestTimeoutMs?: number;
+};
 
 export function createTelegramApi({
   fetchFn = fetch,
   token,
   chatId,
   logger = console,
-  requestTimeoutMs = 10000
+  requestTimeoutMs = 15000
 }: TelegramApiDependencies) {
   function buildTelegramUrl(method: string, query = "") {
     return `https://api.telegram.org/bot${token}/${method}${query}`;
@@ -35,7 +43,7 @@ export function createTelegramApi({
   async function getUpdates(offset: number) {
     try {
       const res = await fetchWithTimeout(
-        buildTelegramUrl("getUpdates", `?offset=${offset + 1}`)
+        buildTelegramUrl("getUpdates", `?offset=${offset + 1}&timeout=5`)
       );
       if (res.ok === false) {
         logger.log("Telegram HTTP error:", res.status, res.statusText);
