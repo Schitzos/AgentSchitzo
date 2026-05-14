@@ -7,7 +7,7 @@ export const TELEGRAM_POLL_INTERVAL_MS = readEnvNumber(
   3000
 );
 
-export function buildIntentPrompt(command) {
+export function buildIntentPrompt(command: string): string {
   return `
 You are an AI coding agent.
 

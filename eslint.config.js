@@ -29,7 +29,7 @@ import tseslint from "typescript-eslint";
 
 export default [
   {
-    ignores: ["coverage/**", "dist/**", "logs/**", "node_modules/**"]
+    ignores: ["coverage/**", "dist/**", "logs/**", "node_modules/**", "archive/**"]
   },
   {
     files: ["**/*.js"],

@@ -2,42 +2,13 @@
   "name": "@agentschitzo/app",
   "version": "1.0.0",
   "description": "Telegram automation service for Codex over Telegram.",
-  "main": "dist/telegram-listener.js",
-  "bin": {
-    "agentSchitzo": "./bin/agentSchitzo.js"
-  },
-  "exports": {
-    "./models/*": {
-      "types": "./models/*.ts",
-      "default": "./dist/models/*.js"
-    },
-    "./telegram/*": {
-      "types": "./telegram/*.ts",
-      "default": "./dist/telegram/*.js"
-    },
-    "./types/*": {
-      "types": "./types/*.ts",
-      "default": "./dist/types/*.js"
-    },
-    "./utils/*": {
-      "types": "./utils/*.ts",
-      "default": "./dist/utils/*.js"
-    },
-    "./telegram-listener": {
-      "types": "./telegram-listener.ts",
-      "default": "./dist/telegram-listener.js"
-    }
-  },
+  "main": "telegram-listener.ts",
   "scripts": {
     "dev": "tsx telegram-listener.ts",
-    "start": "npm run build && node dist/telegram-listener.js",
-    "build": "npx rimraf dist && npm run lint && npm test && npm run typecheck && npm run build-dist",
-    "build-dist": "node --experimental-strip-types ./utils/build-dist.ts",
-    "start:dist": "npm run build-dist && npm --prefix dist start",
+    "start": "tsx telegram-listener.ts",
+    "typecheck": "tsc --noEmit",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --coverage --coverageReporters=json-summary --coverageReporters=text-summary",
     "test:hook": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
-    "test:related": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --passWithNoTests",
-    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write",
