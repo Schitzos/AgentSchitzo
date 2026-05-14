@@ -5,6 +5,8 @@ import { readEnv, readEnvNumber } from "../../utils/env.ts";
 import { execSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import { createTaskQueue, type TaskQueue } from "./task-queue.ts";
+import { searchTaskLog, appendTaskLog, type TaskLogEntry } from "../infrastructure/task-log.ts";
 
 const DESTRUCTIVE_KEYWORDS = /\b(delete|drop|force push|rm -rf|reset --hard)\b/i;
 const MAX_MSG_LEN = 4096;
@@ -12,6 +14,7 @@ const MAX_MSG_LEN = 4096;
 export interface CommandContext {
   session: ModelSession | null;
   queue: string[];
+  taskQueue: TaskQueue | null;
   verbose: boolean;
   history: string[];
   scheduled: { time: number; message: string }[];
@@ -20,12 +23,16 @@ export interface CommandContext {
   pendingConfirmation: string | null;
   loginProc: import("child_process").ChildProcess | null;
   lastReplayedUrl: string | null;
+  _lastInput: string | null;
+  _lastOutput: string | null;
+  _inputTime: number | null;
 }
 
 export function createCommandContext(): CommandContext {
   return {
     session: null,
     queue: [],
+    taskQueue: null,
     verbose: false,
     history: [],
     scheduled: [],
@@ -34,6 +41,9 @@ export function createCommandContext(): CommandContext {
     pendingConfirmation: null,
     loginProc: null,
     lastReplayedUrl: null,
+    _lastInput: null,
+    _lastOutput: null,
+    _inputTime: null,
   };
 }
 
@@ -77,7 +87,7 @@ export async function handleCommand(
   if (trimmed === "/interrupt") return cmdInterrupt(ctx, send);
   if (trimmed === "/status") return cmdStatus(ctx, send);
   if (trimmed === "/verbose") return cmdVerbose(ctx, send);
-  if (trimmed === "/history") return cmdHistory(ctx, send);
+  if (trimmed.startsWith("/history")) return cmdHistory(trimmed, ctx, send);
   if (trimmed === "/help") return cmdHelp(ctx, send);
   if (trimmed === "/undo") return cmdUndo(ctx, send);
   if (trimmed.startsWith("/model")) return cmdModel(trimmed, ctx, send);
@@ -98,10 +108,13 @@ export async function handleCommand(
   // If session is active, forward to it (even if loginProc hasn't been GC'd yet)
   if (ctx.session) {
     if (ctx.session.state() === "processing") {
-      ctx.queue.push(input);
-      await send(`Queued (${ctx.queue.length} pending).`, true);
+      if (!ctx.taskQueue) ctx.taskQueue = createTaskQueue(send);
+      ctx.taskQueue.enqueue(input);
       return;
     }
+    ctx._lastInput = input;
+    ctx._lastOutput = null;
+    ctx._inputTime = Date.now();
     ctx.session.write(input);
     return;
   }
@@ -259,6 +272,7 @@ async function cmdStop(ctx: CommandContext, send: SendFn) {
   ctx.session.kill();
   ctx.session = null;
   ctx.queue = [];
+  if (ctx.taskQueue) ctx.taskQueue.drain();
   try {
     execSync("kiro-cli logout", { timeout: 10_000 });
   } catch {
@@ -281,9 +295,12 @@ async function cmdStatus(ctx: CommandContext, send: SendFn) {
     await send("No active session.");
     return;
   }
-  await send(
-    `Model: ${ctx.session.adapterName()}\nState: ${ctx.session.state()}\nQueued: ${ctx.queue.length}`
-  );
+  const queueSize = ctx.taskQueue ? ctx.taskQueue.size() : ctx.queue.length;
+  const current = ctx.taskQueue?.current();
+  const status = current
+    ? `Current: #${current.id} (${current.status})\nQueued: ${ctx.taskQueue!.pending().length}`
+    : `Queued: ${queueSize}`;
+  await send(`Model: ${ctx.session.adapterName()}\nState: ${ctx.session.state()}\n${status}`);
 }
 
 async function cmdVerbose(ctx: CommandContext, send: SendFn) {
@@ -291,16 +308,25 @@ async function cmdVerbose(ctx: CommandContext, send: SendFn) {
   await send(`Verbose mode: ${ctx.verbose ? "ON" : "OFF"}`);
 }
 
-async function cmdHistory(ctx: CommandContext, send: SendFn) {
-  if (ctx.history.length === 0) {
-    await send("No history yet.");
+async function cmdHistory(text: string, ctx: CommandContext, send: SendFn) {
+  const query = text.replace("/history", "").trim();
+  let entries: TaskLogEntry[];
+  try {
+    entries = await searchTaskLog(query);
+  } catch {
+    await send("Failed to read task history.");
     return;
   }
-  const list = ctx.history
-    .slice(-10)
-    .map((h, i) => `${i + 1}. ${h.slice(0, 100)}`)
-    .join("\n");
-  await send(list);
+  if (entries.length === 0) {
+    await send(query ? `No tasks matching "${query}".` : "No task history yet.");
+    return;
+  }
+  const lines = entries.map((e) => {
+    const dur = e.durationMs ? `${(e.durationMs / 1000).toFixed(1)}s` : "?";
+    const icon = e.status === "done" ? "✅" : "❌";
+    return `${icon} #${e.id} [${dur}] ${e.prompt.slice(0, 60)}`;
+  });
+  await send(lines.join("\n"));
 }
 
 async function cmdHelp(_ctx: CommandContext, send: SendFn) {
@@ -313,7 +339,7 @@ async function cmdHelp(_ctx: CommandContext, send: SendFn) {
       "/model [name] — show or switch adapter",
       "/project <path> — switch working directory",
       "/verbose — toggle raw output streaming",
-      "/history — last 10 task summaries",
+      "/history [query] — search task history",
       "/schedule <HH:MM> <msg> — deferred command",
       "/undo — revert last change",
       "/help — this message",
@@ -465,7 +491,12 @@ function wireSession(ctx: CommandContext, send: SendFn) {
   if (!ctx.session) return;
 
   function drainQueue() {
-    if (ctx.queue.length > 0 && ctx.session?.state() === "idle") {
+    if (ctx.taskQueue) {
+      const next = ctx.taskQueue.current();
+      if (next && next.status === "running" && ctx.session?.state() === "idle") {
+        ctx.session.write(next.prompt);
+      }
+    } else if (ctx.queue.length > 0 && ctx.session?.state() === "idle") {
       const next = ctx.queue.shift()!;
       ctx.session.write(next);
     }
@@ -483,14 +514,13 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 
     ctx.history.push(text.slice(0, 200));
     if (ctx.history.length > 50) ctx.history.shift();
+    ctx._lastOutput = text;
 
     if (ctx.verbose) {
-      // Verbose ON: send raw terminal-style output
       for (const part of splitMessage(text)) {
         send(part, true).catch(() => {});
       }
     } else {
-      // Verbose OFF: send only human-like conversational reply
       const reply = extractHumanReply(text);
       if (reply && reply.length >= 5) {
         for (const part of splitMessage(reply)) {
@@ -505,10 +535,39 @@ function wireSession(ctx: CommandContext, send: SendFn) {
   });
 
   ctx.session.onIdle(() => {
-    drainQueue();
+    // Log completed interaction
+    if (ctx._lastInput && ctx._lastOutput) {
+      appendTaskLog({
+        prompt: ctx._lastInput,
+        plan: "",
+        output: ctx._lastOutput,
+        status: "done",
+        startedAt: ctx._inputTime ?? undefined,
+      }).catch(() => {});
+      ctx._lastInput = null;
+      ctx._lastOutput = null;
+      ctx._inputTime = null;
+    }
+
+    // Mark current task done and promote next
+    if (ctx.taskQueue?.current()) {
+      ctx.taskQueue.markDone();
+      const next = ctx.taskQueue.current();
+      if (next && ctx.session?.state() === "idle") {
+        ctx._lastInput = next.prompt;
+        ctx._lastOutput = null;
+        ctx._inputTime = Date.now();
+        ctx.session.write(next.prompt);
+      }
+    } else {
+      drainQueue();
+    }
   });
 
   ctx.session.onExit((code) => {
+    if (ctx.taskQueue?.current()) {
+      ctx.taskQueue.markFailed();
+    }
     send(`💀 Session exited (code: ${code ?? "unknown"}).`);
     ctx.session = null;
   });

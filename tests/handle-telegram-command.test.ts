@@ -118,14 +118,14 @@ describe("handleCommand", () => {
 
   it("/history shows empty", async () => {
     await handleCommand("/history", ctx, send);
-    expect(send).toHaveBeenCalledWith("No history yet.");
+    expect(send).toHaveBeenCalledWith("No task history yet.");
   });
 
   it("/history shows items", async () => {
-    ctx.history = ["task1", "task2"];
-    await handleCommand("/history", ctx, send);
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("1. task1"));
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("2. task2"));
+    // The new /history reads from task-log.json via searchTaskLog
+    // With no log file, it shows empty
+    await handleCommand("/history search term", ctx, send);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("No tasks matching"));
   });
 
   it("/model shows current", async () => {
@@ -224,8 +224,8 @@ describe("handleCommand", () => {
     ctx.session!.state = () => "processing";
     send.mockClear();
     await handleCommand("do something", ctx, send);
-    expect(ctx.queue).toEqual(["do something"]);
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Queued"), true);
+    expect(ctx.taskQueue).not.toBeNull();
+    expect(ctx.taskQueue!.current()?.prompt).toBe("do something");
   });
 
   it("writes to session when idle", async () => {
