@@ -6,7 +6,8 @@ import { execSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { createTaskQueue, type TaskQueue } from "./task-queue.ts";
-import { searchTaskLog, appendTaskLog, type TaskLogEntry } from "../infrastructure/task-log.ts";
+import { searchTaskLog, appendTaskLog, formatLogDate, type TaskLogEntry } from "../infrastructure/task-log.ts";
+import { classifyRisk, buildApprovalPrompt } from "./approval-gate.ts";
 
 const DESTRUCTIVE_KEYWORDS = /\b(delete|drop|force push|rm -rf|reset --hard)\b/i;
 const MAX_MSG_LEN = 4096;
@@ -69,14 +70,24 @@ export async function handleCommand(
   // Confirmation flow
   if (ctx.pendingConfirmation) {
     if (trimmed === "/yes") {
+      const held = ctx.pendingConfirmation;
       ctx.pendingConfirmation = null;
-      await send("✅ Confirmed. Resuming.");
+      // If held input was a pre-execution gate, forward it now
+      if (ctx.session && held !== "__output__") {
+        await send("✅ Confirmed. Proceeding.");
+        ctx._lastInput = held;
+        ctx._lastOutput = null;
+        ctx._inputTime = Date.now();
+        ctx.session.write(held);
+      } else {
+        await send("✅ Confirmed. Resuming.");
+      }
       return;
     }
     if (trimmed === "/no") {
       ctx.pendingConfirmation = null;
       /* istanbul ignore next */ ctx.session?.interrupt();
-      await send("❌ Cancelled. Sent interrupt.");
+      await send("❌ Cancelled.");
       return;
     }
   }
@@ -91,7 +102,7 @@ export async function handleCommand(
   if (trimmed === "/help") return cmdHelp(ctx, send);
   if (trimmed === "/undo") return cmdUndo(ctx, send);
   if (trimmed.startsWith("/model")) return cmdModel(trimmed, ctx, send);
-  if (trimmed.startsWith("/project ")) return cmdProject(trimmed, ctx, send);
+  if (trimmed.startsWith("/project")) return cmdProject(trimmed, ctx, send);
   if (trimmed.startsWith("/schedule")) return cmdSchedule(trimmed, ctx, send);
 
   // Forward to session
@@ -110,6 +121,12 @@ export async function handleCommand(
     if (ctx.session.state() === "processing") {
       if (!ctx.taskQueue) ctx.taskQueue = createTaskQueue(send);
       ctx.taskQueue.enqueue(input);
+      return;
+    }
+    // Pre-execution approval gate for high-risk input
+    if (classifyRisk(input) === "high") {
+      ctx.pendingConfirmation = input;
+      await send(buildApprovalPrompt(input));
       return;
     }
     ctx._lastInput = input;
@@ -322,9 +339,9 @@ async function cmdHistory(text: string, ctx: CommandContext, send: SendFn) {
     return;
   }
   const lines = entries.map((e) => {
-    const dur = e.durationMs ? `${(e.durationMs / 1000).toFixed(1)}s` : "?";
+    const date = formatLogDate(new Date(e.timestamp));
     const icon = e.status === "done" ? "✅" : "❌";
-    return `${icon} #${e.id} [${dur}] ${e.prompt.slice(0, 60)}`;
+    return `${icon} #${e.id} [${date}] ${e.prompt.slice(0, 60)}`;
   });
   await send(lines.join("\n"));
 }
@@ -460,6 +477,11 @@ export function extractHumanReply(text: string): string {
   out = out.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
   // Remove code fences and their content
   out = out.replace(/```[\s\S]*?```/g, "");
+  // Remove tool-use / agent progress lines
+  out = out.replace(/^[\s]*[-✓•].*(?:using tool|Completed in|Searching for|Updating:|Reading:|Writing:).*$/gm, "");
+  out = out.replace(/^[\s]*(?:I'll modify|I'll read|I'll create|I'll update|I'll delete).*$/gm, "");
+  out = out.replace(/^[\s]*[-+]\s*\d+\s*:.*$/gm, ""); // diff lines like "- 9: ..." or "+ 9: ..."
+  out = out.replace(/^[\s]*Successfully (?:found|created|replaced|inserted).*$/gm, "");
   // Remove lines that look like shell commands
   out = out.replace(/^[\s]*[$>]\s.*$/gm, "");
   // Remove diff headers and hunks
@@ -504,11 +526,11 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 
   ctx.session.onOutput((text) => {
 
-    // Destructive action check
+    // Destructive action check (output-level, second safety layer)
     if (DESTRUCTIVE_KEYWORDS.test(text) && !ctx.pendingConfirmation) {
-      ctx.pendingConfirmation = text;
+      ctx.pendingConfirmation = "__output__";
       const preview = text.slice(0, 200);
-      send(`⚠️ Destructive action detected:\n${preview}\n\nReply /yes or /no`);
+      send(`⚠️ Destructive action detected in output:\n${preview}\n\nReply /yes to continue or /no to interrupt.`);
       return;
     }
 

@@ -117,8 +117,8 @@ describe("handleCommand", () => {
   });
 
   it("/history shows empty", async () => {
-    await handleCommand("/history", ctx, send);
-    expect(send).toHaveBeenCalledWith("No task history yet.");
+    await handleCommand("/history nonexistent_xyz_query_12345", ctx, send);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("No tasks matching"));
   });
 
   it("/history shows items", async () => {
@@ -228,6 +228,15 @@ describe("handleCommand", () => {
     expect(ctx.taskQueue!.current()?.prompt).toBe("do something");
   });
 
+  it("blocks high-risk input with approval gate", async () => {
+    await handleCommand("/start", ctx, send);
+    send.mockClear();
+    await handleCommand("delete the production database", ctx, send);
+    expect(ctx.pendingConfirmation).toBe("delete the production database");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("high-risk"));
+    expect(ctx.session!.write).not.toHaveBeenCalled();
+  });
+
   it("writes to session when idle", async () => {
     await handleCommand("/start", ctx, send);
     send.mockClear();
@@ -242,8 +251,18 @@ describe("handleCommand", () => {
     expect(ctx.session!.write).toHaveBeenCalledWith("literal text");
   });
 
-  it("/yes confirms pending action", async () => {
-    ctx.pendingConfirmation = "some action";
+  it("/yes confirms pending action and forwards held input", async () => {
+    await handleCommand("/start", ctx, send);
+    ctx.pendingConfirmation = "delete the production database";
+    send.mockClear();
+    await handleCommand("/yes", ctx, send);
+    expect(ctx.pendingConfirmation).toBeNull();
+    expect(send).toHaveBeenCalledWith("✅ Confirmed. Proceeding.");
+    expect(ctx.session!.write).toHaveBeenCalledWith("delete the production database");
+  });
+
+  it("/yes confirms output-level detection", async () => {
+    ctx.pendingConfirmation = "__output__";
     await handleCommand("/yes", ctx, send);
     expect(ctx.pendingConfirmation).toBeNull();
     expect(send).toHaveBeenCalledWith("✅ Confirmed. Resuming.");
@@ -255,14 +274,14 @@ describe("handleCommand", () => {
     send.mockClear();
     await handleCommand("/no", ctx, send);
     expect(ctx.pendingConfirmation).toBeNull();
-    expect(send).toHaveBeenCalledWith("❌ Cancelled. Sent interrupt.");
+    expect(send).toHaveBeenCalledWith("❌ Cancelled.");
   });
 
   it("/no cancels pending action without session", async () => {
     ctx.pendingConfirmation = "some action";
     await handleCommand("/no", ctx, send);
     expect(ctx.pendingConfirmation).toBeNull();
-    expect(send).toHaveBeenCalledWith("❌ Cancelled. Sent interrupt.");
+    expect(send).toHaveBeenCalledWith("❌ Cancelled.");
   });
 
   it("falls through when pending confirmation but message is not /yes or /no", async () => {
@@ -433,8 +452,8 @@ describe("wireSession via /start", () => {
     send.mockClear();
     outputCb("running rm -rf /tmp/stuff");
 
-    expect(ctx.pendingConfirmation).not.toBeNull();
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Destructive action"));
+    expect(ctx.pendingConfirmation).toBe("__output__");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Destructive action detected in output"));
   });
 
   it("wires output callback in verbose mode", async () => {

@@ -29,13 +29,9 @@ export function normalizePlan(plan: unknown): string {
 }
 
 export function formatLogDate(date: Date): string {
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const day = `${date.getDate()}`.padStart(2, "0");
-  const year = `${date.getFullYear()}`;
-  const hours = `${date.getHours()}`.padStart(2, "0");
-  const minutes = `${date.getMinutes()}`.padStart(2, "0");
-
-  return `${month}/${day}/${year} ${hours}:${minutes}`;
+  return `${day} ${months[date.getMonth()]} ${date.getFullYear()}`;
 }
 
 export async function readTaskLogEntries(logFilePath: string): Promise<TaskLogEntry[]> {
