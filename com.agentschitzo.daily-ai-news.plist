@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentschitzo.daily-ai-news</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/rizkyrachmawan/.nvm/versions/node/v20.20.0/bin/npx</string>
+        <string>tsx</string>
+        <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/scripts/daily-ai-news.ts</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/logs/daily-ai-news-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/logs/daily-ai-news-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

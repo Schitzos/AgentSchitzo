@@ -10,6 +10,7 @@ import {
   type SendFn,
 } from "./telegram/application/handle-telegram-command.ts";
 import { readEnv, readEnvNumber, readRequiredEnv } from "./utils/env.ts";
+import { scheduleDailyClearUploads } from "./cron/clear-uploads.ts";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -19,6 +20,7 @@ export interface TelegramUpdate {
     document?: { file_id: string; file_name?: string };
     photo?: { file_id: string }[];
     voice?: { file_id: string };
+    reply_to_message?: { text?: string };
   };
 }
 
@@ -130,7 +132,11 @@ export async function processUpdate(
   }
 
   if (msg.text) {
-    await handleCommand(msg.text, ctx, send);
+    let input = msg.text;
+    if (msg.reply_to_message?.text && !msg.text.trim().startsWith("/")) {
+      input = `[Replying to: "${msg.reply_to_message.text}"]\n${msg.text}`;
+    }
+    await handleCommand(input, ctx, send);
   }
 }
 
@@ -183,6 +189,7 @@ if (isMainModule) {
   const send = createSendFn(api, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID);
 
   setInterval(() => tickScheduler(ctx), 30_000);
+  scheduleDailyClearUploads();
 
   async function startPolling() {
     let offset = 0;
