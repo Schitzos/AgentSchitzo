@@ -23,6 +23,7 @@ export interface CommandContext {
   adapterName: string;
   pendingConfirmation: string | null;
   loginProc: import("child_process").ChildProcess | null;
+  loginExitedAt: number | null;
   lastReplayedUrl: string | null;
   _lastInput: string | null;
   _lastOutput: string | null;
@@ -41,6 +42,7 @@ export function createCommandContext(): CommandContext {
     adapterName: readEnv("MODEL_ADAPTER", "kiro"),
     pendingConfirmation: null,
     loginProc: null,
+    loginExitedAt: null,
     lastReplayedUrl: null,
     _lastInput: null,
     _lastOutput: null,
@@ -110,7 +112,8 @@ export async function handleCommand(
 
   // Detect pasted localhost callback URL from login flow
   /* istanbul ignore next -- replayCallbackUrl is integration-tested separately */
-  if (ctx.loginProc && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(input)) {
+  const loginActive = ctx.loginProc || (ctx.loginExitedAt && Date.now() - ctx.loginExitedAt < 30_000);
+  if (loginActive && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(input)) {
     if (ctx.lastReplayedUrl === input) return; // deduplicate
     ctx.lastReplayedUrl = input;
     return replayCallbackUrl(input, ctx, send);
@@ -149,6 +152,12 @@ async function cmdStart(ctx: CommandContext, send: SendFn) {
     return;
   }
 
+  // Guard: kill stale loginProc from a previous attempt
+  if (ctx.loginProc) {
+    ctx.loginProc.kill();
+    ctx.loginProc = null;
+  }
+
   // Check if already logged in
   try {
     execSync("kiro-cli whoami", { timeout: 5000, stdio: ["pipe", "pipe", "pipe"] });
@@ -177,8 +186,29 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
     send("❌ Login timed out (2 min). Send /start to retry.");
   }, 120_000);
 
+  const adapter = getAdapter(ctx.adapterName);
+
+  // Drain stdout/stderr to prevent pipe buffer deadlock (BUG 4 fix)
+  // Also detect login URLs printed by kiro-cli (BUG 2 fix)
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    if (adapter.detectLoginUrl) {
+      const url = adapter.detectLoginUrl(text);
+      if (url) send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`);
+    }
+  });
+
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    if (adapter.detectLoginUrl) {
+      const url = adapter.detectLoginUrl(text);
+      if (url) send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`);
+    }
+  });
+
   proc.on("exit", (code) => {
     clearTimeout(timeout);
+    ctx.loginExitedAt = Date.now();
     if (code === 0 && ctx.loginProc === proc) {
       ctx.loginProc = null;
       ctx.lastReplayedUrl = null;
@@ -187,6 +217,8 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
     } else if (ctx.loginProc === proc) {
       ctx.loginProc = null;
       ctx.lastReplayedUrl = null;
+      // BUG 1 fix: notify user on non-zero exit
+      send(`❌ Login failed (exit code: ${code ?? "unknown"}). Send /start to retry.`);
     }
   });
 
@@ -234,38 +266,52 @@ function closeBrowserTab(): void {
 /* istanbul ignore next -- integration-level login replay, requires live server */
 async function replayCallbackUrl(url: string, ctx: CommandContext, send: SendFn) {
   const parsed = new URL(url);
-  const port = parsed.port || "3128";
+  const port = parsed.port || "3000";
   const localUrl = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
   await send("🔄 Replaying callback locally...");
-  try {
-    await fetch(localUrl, { redirect: "manual" });
-    // If this is the OAuth callback (from IAM IdC), login should complete automatically
-    if (parsed.pathname.includes("/oauth/callback") || parsed.searchParams.has("code")) {
-      await send("⏳ OAuth callback replayed. Waiting for login to complete...");
-      return;
+
+  // Retry fetch up to 3 times with 1s delay (BUG 3 fix: port may not be ready yet)
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await fetch(localUrl, { redirect: "manual" });
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e as Error;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000));
     }
-    // First callback (signin) — poll for the IAM IdC URL that opens in browser
-    let attempts = 0;
-    const maxAttempts = 10;
-    const interval = setInterval(async () => {
-      attempts++;
-      if (!ctx.loginProc || attempts > maxAttempts) {
-        clearInterval(interval);
-        if (attempts > maxAttempts && ctx.loginProc) {
-          await send("⏳ Waiting for login to complete...");
-        }
-        return;
-      }
-      const nextUrl = captureLoginUrl();
-      if (nextUrl && nextUrl.includes("awsapps.com/start")) {
-        clearInterval(interval);
-        await send(`🔑 Now authenticate here:\n${nextUrl}\n\nAfter you authorize, paste the failed localhost URL back here.`);
-        closeBrowserTab();
-      }
-    }, 2000);
-  } catch (e) {
-    await send(`❌ Failed to reach local server: ${(e as Error).message}`);
   }
+
+  if (lastErr) {
+    await send(`❌ Failed to reach local server after 3 attempts: ${lastErr.message}`);
+    return;
+  }
+
+  // If this is the OAuth callback (from IAM IdC), login should complete automatically
+  if (parsed.pathname.includes("/oauth/callback") || parsed.searchParams.has("code")) {
+    await send("⏳ OAuth callback replayed. Waiting for login to complete...");
+    return;
+  }
+  // First callback (signin) — kiro-cli opens browser with full awsapps.com URL (with token params).
+  // Capture it immediately before the browser redirects away.
+  await new Promise((r) => setTimeout(r, 1500));
+  const fullUrl = captureLoginUrl();
+  if (fullUrl && /awsapps\.com/i.test(fullUrl)) {
+    await send(`🔑 Now authenticate here:\n${fullUrl}\n\nAfter you authorize, paste the failed localhost URL back here.`);
+    closeBrowserTab();
+  } else {
+    // Retry once more after a short delay
+    await new Promise((r) => setTimeout(r, 1500));
+    const retry = captureLoginUrl();
+    if (retry && /awsapps\.com/i.test(retry)) {
+      await send(`🔑 Now authenticate here:\n${retry}\n\nAfter you authorize, paste the failed localhost URL back here.`);
+      closeBrowserTab();
+    } else {
+      await send("🌐 Browser opened with the auth link. Copy the full URL from your browser (with query params) and authenticate, then paste the failed localhost URL back here.");
+    }
+  }
+  closeBrowserTab();
 }
 
 async function startSession(ctx: CommandContext, send: SendFn) {
