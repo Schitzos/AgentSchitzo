@@ -188,7 +188,7 @@ if (isMainModule) {
   const ctx: CommandContext = createCommandContext();
   const send = createSendFn(api, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID);
 
-  setInterval(() => tickScheduler(ctx), 30_000);
+  setInterval(() => tickScheduler(ctx, send), 30_000);
   scheduleDailyClearUploads();
 
   async function startPolling() {

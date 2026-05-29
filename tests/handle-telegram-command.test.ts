@@ -31,6 +31,28 @@ jest.unstable_mockModule("child_process", () => ({
   }),
 }));
 
+let mockSchedules: Array<{ id: number; type: string; hour: number; minute: number; message: string; lastFired?: string }> = [];
+jest.unstable_mockModule("../scheduler/persistent-scheduler.ts", () => ({
+  loadSchedules: jest.fn(() => mockSchedules),
+  saveSchedules: jest.fn((entries: typeof mockSchedules) => { mockSchedules = entries; }),
+  addSchedule: jest.fn((type: string, hour: number, minute: number, message: string) => {
+    const id = mockSchedules.length + 1;
+    const entry = { id, type, hour, minute, message };
+    mockSchedules.push(entry);
+    return entry;
+  }),
+  removeSchedule: jest.fn((id: number) => {
+    const len = mockSchedules.length;
+    mockSchedules = mockSchedules.filter((e) => e.id !== id);
+    return mockSchedules.length < len;
+  }),
+  getDueSchedules: jest.fn(() => []),
+  markFired: jest.fn(),
+  formatSchedule: jest.fn((e: { id: number; type: string; hour: number; minute: number; message: string }) =>
+    `#${e.id} [${e.type}] ${String(e.hour).padStart(2, "0")}:${String(e.minute).padStart(2, "0")} — ${e.message}`
+  ),
+}));
+
 const { handleCommand, createCommandContext, splitMessage, tickScheduler, normalizeOutput, isSummaryOutput } =
   await import("../telegram/application/handle-telegram-command.ts");
 const { createModelSession } = await import("../session/model-session.ts");
@@ -43,6 +65,7 @@ describe("handleCommand", () => {
   beforeEach(() => {
     ctx = createCommandContext();
     send = jest.fn<(text: string, silent?: boolean) => Promise<boolean>>().mockResolvedValue(true);
+    mockSchedules = [];
   });
 
   it("replies with no session message when no session", async () => {
@@ -135,13 +158,13 @@ describe("handleCommand", () => {
 
   it("/model unknown errors", async () => {
     await handleCommand("/model nope", ctx, send);
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Unknown adapter"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Unknown model/adapter"));
   });
 
   it("/model switches adapter", async () => {
     await handleCommand("/model gemini-cli", ctx, send);
     expect(ctx.adapterName).toBe("gemini-cli");
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Switched to gemini-cli"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Switched to adapter gemini-cli"));
   });
 
   it("/model kills active session before switching", async () => {
@@ -181,29 +204,26 @@ describe("handleCommand", () => {
 
   it("/schedule adds a job", async () => {
     await handleCommand("/schedule 23:59 test msg", ctx, send);
-    expect(ctx.scheduled.length).toBe(1);
-    expect(ctx.scheduled[0].message).toBe("test msg");
-    expect(send).toHaveBeenCalledWith(expect.stringContaining("Scheduled for 23:59"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("23:59"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("test msg"));
   });
 
-  it("/schedule with past time schedules for next day", async () => {
-    await handleCommand("/schedule 00:00 past task", ctx, send);
-    expect(ctx.scheduled.length).toBe(1);
-    // Should be scheduled for tomorrow since 00:00 is always in the past
-    const scheduled = new Date(ctx.scheduled[0].time);
-    const now = new Date();
-    expect(scheduled.getTime()).toBeGreaterThan(now.getTime());
+  it("/schedule with type adds recurring job", async () => {
+    await handleCommand("/schedule weekdays 10:00 ai news", ctx, send);
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("weekdays"));
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("ai news"));
   });
 
   it("/schedule shows existing jobs", async () => {
-    ctx.scheduled = [{ time: new Date(2025, 0, 1, 14, 30).getTime(), message: "do thing" }];
+    await handleCommand("/schedule daily 14:30 do thing", ctx, send);
+    send.mockClear();
     await handleCommand("/schedule", ctx, send);
     expect(send).toHaveBeenCalledWith(expect.stringContaining("do thing"));
   });
 
   it("/schedule with bad format", async () => {
     await handleCommand("/schedule badformat", ctx, send);
-    expect(send).toHaveBeenCalledWith("Usage: /schedule HH:MM <message>");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
 
   it("/undo with session", async () => {

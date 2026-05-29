@@ -11,7 +11,9 @@ export interface ModelSession {
   interrupt(): void;
   kill(): void;
   onOutput(cb: (text: string) => void): void;
+  onStderr(cb: (text: string) => void): void;
   onLoginUrl(cb: (url: string) => void): void;
+  onProcessEnd(cb: (code: number | null) => void): void;
   onExit(cb: (code: number | null) => void): void;
   onIdle(cb: () => void): void;
   start(): void;
@@ -20,17 +22,20 @@ export interface ModelSession {
 export interface ModelSessionOptions {
   adapter: CliModelAdapter;
   cwd: string;
+  model?: string;
   debounceMs?: number;
   timeoutMs?: number;
 }
 
 export function createModelSession(opts: ModelSessionOptions): ModelSession {
-  const { adapter, cwd, debounceMs = 500, timeoutMs = 300_000 } = opts;
+  const { adapter, cwd, model, debounceMs = 500, timeoutMs = 300_000 } = opts;
 
   let proc: ChildProcess | null = null;
   let currentState: SessionState = "idle";
   let outputCb: ((text: string) => void) | null = null;
+  let stderrCb: ((text: string) => void) | null = null;
   let loginUrlCb: ((url: string) => void) | null = null;
+  let processEndCb: ((code: number | null) => void) | null = null;
   let exitCb: ((code: number | null) => void) | null = null;
   let idleCb: (() => void) | null = null;
   let silenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -55,7 +60,7 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
     if (stopped) return;
     currentState = "processing";
 
-    const args = [...adapter.buildArgs(cwd), input];
+    const args = [...adapter.buildArgs(cwd, model), input];
 
     proc = spawn(adapter.command, args, {
       cwd,
@@ -90,14 +95,17 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
         const url = adapter.detectLoginUrl(text);
         /* istanbul ignore next */ if (url && loginUrlCb) loginUrlCb(url);
       }
+
+      if (stderrCb) stderrCb(text);
     });
 
-    proc.on("exit", (_code) => {
+    proc.on("exit", (code) => {
       if (silenceTimer) clearTimeout(silenceTimer);
       proc = null;
       currentState = "idle";
       buffer.flush();
       buffer.destroy();
+      if (processEndCb) processEndCb(code);
       // Use setImmediate to ensure state is fully "idle" before draining queue
       setImmediate(() => { if (idleCb) idleCb(); });
     });
@@ -133,8 +141,14 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
     onOutput(cb) {
       outputCb = cb;
     },
+    onStderr(cb) {
+      stderrCb = cb;
+    },
     onLoginUrl(cb) {
       loginUrlCb = cb;
+    },
+    onProcessEnd(cb) {
+      processEndCb = cb;
     },
     onExit(cb) {
       exitCb = cb;

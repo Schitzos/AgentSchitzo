@@ -1,42 +1,41 @@
-# Tasks — Kiro Integration
+# Tasks — AgentSchitzo
 
-## Phase 0: Cleanup & Spike
+## Phase 1: Core Session (done)
+- [x] `adapters/cli-model-adapter.ts` interface
+- [x] `adapters/kiro.ts` adapter
+- [x] `adapters/codex-cli.ts`, `gemini-cli.ts`, `local-llm.ts`
+- [x] `session/model-session.ts` (spawn, write, interrupt, kill, events)
+- [x] `session/output-buffer.ts` (debounced flush, ANSI strip)
+- [x] Unit tests for session and buffer
 
-- [x] Archive old Groq/Codex/verifier code to `archive/`
-- [x] Remove stale temp files (`codex-write-check.tmp`, `sandbox-write-test.txt`)
-- [ ] Spike: confirm `kiro` works headlessly via piped stdio (see `scripts/spike-kiro.sh`)
-- [ ] Document findings (latency, auth flow, output format)
+## Phase 2: Telegram Integration (done)
+- [x] Rewrite `handle-telegram-command.ts` as command router
+- [x] Wire model-session into Telegram polling loop
+- [x] `/start`, `/stop`, `/interrupt`, `/status`
+- [x] Output forwarding (summary + verbose toggle)
+- [x] Message queue
+- [x] Login URL detection and forwarding
+- [x] Split long messages at 4096 char boundary
 
-## Phase 1: Core Session
+## Phase 3: Langfuse Tracing (NEW)
+- [ ] Install `langfuse` SDK
+- [ ] `tracing/langfuse-client.ts` — thin wrapper (init, startTrace, startSpan, endSpan, flush)
+- [ ] `tracing/trace-session.ts` — orchestrates trace lifecycle per execution
+- [ ] Add `git diff` capture after CLI tool exits
+- [ ] Wire `TraceSession` into `handle-telegram-command.ts` flow
+- [ ] Add `LANGFUSE_*` env vars to `utils/env.ts`
+- [ ] Graceful degradation: tracing fails silently if Langfuse unavailable
+- [ ] Test: verify traces appear in Langfuse dashboard
+- [ ] Add stderr capture as separate metadata on span
 
-- [ ] Create `adapters/cli-model-adapter.ts` interface
-- [ ] Implement `adapters/kiro.ts` adapter
-- [ ] Implement `session/model-session.ts` (spawn, write, interrupt, kill, events)
-- [ ] Implement `session/output-buffer.ts` (debounced flush, ANSI strip)
-- [ ] Unit tests for session and buffer
-- [ ] Manual end-to-end test: spawn kiro, send prompt, receive output
-
-## Phase 2: Telegram Integration
-
-- [ ] Rewrite `telegram/application/handle-telegram-command.ts` as command router
-- [ ] Wire model-session into Telegram polling loop
-- [ ] Implement `/start`, `/stop`, `/interrupt`, `/status`
-- [ ] Implement output forwarding (summary mode + verbose toggle)
-- [ ] Implement message queue (hold messages while kiro is processing)
-- [ ] Login URL detection and forwarding
-- [ ] Split long messages at 4096 char boundary
-- [ ] Integration test: Telegram → kiro → Telegram round-trip
-
-## Phase 3: Advanced Features
-
+## Phase 4: Advanced Features
 - [ ] `/project <path>` — switch working directory
 - [ ] `/history` — in-memory task summaries
 - [ ] `/schedule <time> <msg>` — deferred commands
 - [ ] `/undo` — revert last change
 - [ ] Destructive-action confirmation (keyword scan + pause)
-- [ ] File/photo upload → save to `./uploads/` → notify kiro
+- [ ] File/photo upload → save to `./uploads/` → notify tool
 - [ ] Webhook mode (`TELEGRAM_MODE=webhook`)
 - [ ] Notification priority levels (silent for info, audible for important)
 - [ ] Session auto-resume on restart (PID file check)
-- [ ] Additional adapters: `gemini-cli`, `codex-cli`, `local-llm`
 - [ ] `/model <name>` hot-swap

@@ -1,59 +1,34 @@
-# Kiro Integration Spec
+# AgentSchitzo Spec
 
 ## Summary
+CLI model wrapper w/ observability. Receives commands (Telegram/terminal), spawns configurable CLI AI tool as child process, captures output + file changes, sends structured traces to Langfuse.
 
-Replace the Groq + Codex pipeline with a Telegram ↔ CLI model proxy. The app spawns a configurable CLI model (kiro, gemini-cli, codex-cli, or local LLM) as a child process on demand and bridges Telegram messages bidirectionally with its stdin/stdout.
+Active CLI tool is **pluggable** — focused on `kiro-cli`, but adapter pattern supports any CLI tool (codex, gemini-cli, local LLMs). Switching adapters = no arch changes.
+
+## Architecture
+```
+Terminal/Telegram command → Create session_id → Langfuse trace → Run CLI tool → Capture stdout/stderr → Capture file diffs → Send to Langfuse
+```
+
+## Core Concept
+AgentSchitzo = **execution wrapper**, NOT chatbot:
+1. Receives task (Telegram/direct)
+2. Creates traceable session
+3. Delegates to CLI AI tool
+4. Observes everything (output, file changes, exit code)
+5. Reports structured traces to Langfuse
 
 ## Supported Adapters
+| Adapter | CLI Command | Status |
+|---------|-------------|--------|
+| kiro | `kiro` | **Primary** |
+| codex-cli | `codex` | Supported |
+| gemini-cli | `gemini` | Supported |
+| local-llm | configurable | Supported |
 
-| Adapter | CLI Command | Notes |
-|---------|-------------|-------|
-| kiro | `kiro` | Default. Requires login on first use. |
-| gemini-cli | `gemini` | Google Gemini CLI |
-| codex-cli | `codex` | OpenAI Codex CLI |
-| local-llm | configurable | e.g. ollama, llama.cpp, any CLI that reads stdin |
-
-## Flow
-
-```
-/start → spawn `kiro` as child process (piped stdio)
-       → read stdout line by line
-       → detect login URL → send to Telegram
-       → after auth succeeds, kiro stays running
-       → future Telegram messages get piped to kiro's stdin
-       → kiro's stdout gets sent back to Telegram
-```
-
-## User Interaction
-
-1. User sends `/start` in Telegram.
-2. App spawns `kiro` CLI as a child process.
-3. Kiro outputs a login URL during first-time auth.
-4. App detects the URL and sends it to the user in Telegram.
-5. User opens the link on their phone and authenticates.
-6. Kiro session is now active.
-7. Any subsequent Telegram message is forwarded to kiro's stdin.
-8. Kiro processes the task.
-9. When kiro finishes processing, app sends a task summary back to Telegram.
-10. Any kiro stdout output is forwarded back to Telegram.
-
-## Commands
-
-| Command | Action |
-|---------|--------|
-| `/start` | Spawn kiro process, send login URL if needed |
-| `/stop` | Kill the running kiro process |
-| `/interrupt` | Interrupt kiro while it's processing |
-| `/status` | Show if kiro is idle, processing, or not running |
-| `/model` | Show current model; `/model <name>` to switch adapter |
-| `/verbose` | Toggle between summary-only and full raw output mode |
-| `/history` | Show last N task summaries |
-| `/retry` | Re-send the last message to kiro |
-| `/cwd <path>` | Change kiro's working directory |
-| `/project <path>` | Kill current session, start new kiro in a different directory |
-| `/schedule <time> <msg>` | Queue a command for kiro at a specific time |
-| `/undo` | Tell kiro to revert its last change |
-| `/help` | List all available commands |
-| `> ...` | Escape prefix — forward literally to kiro (bypass command parsing) |
-| (any text) | Forward to kiro stdin (queued if kiro is busy) |
-| (file/photo) | Save to project directory, notify kiro about the upload |
+## Key Differentiator
+Unlike running CLI tools directly, adds:
+- **Session tracking** — unique session_id per execution
+- **Full observability** — stdout, stderr, file diffs, duration, exit code → Langfuse
+- **Telegram bridge** — trigger/monitor from mobile
+- **Execution history** — query past runs, costs, outcomes via Langfuse

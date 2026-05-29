@@ -3,11 +3,14 @@ import { createModelSession } from "../../session/model-session.ts";
 import { getAdapter, listAdapters } from "../../adapters/index.ts";
 import { readEnv, readEnvNumber } from "../../utils/env.ts";
 import { execSync, spawn } from "child_process";
+import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import { createTaskQueue, type TaskQueue } from "./task-queue.ts";
 import { searchTaskLog, appendTaskLog, formatLogDate, type TaskLogEntry } from "../infrastructure/task-log.ts";
 import { classifyRisk, buildApprovalPrompt } from "./approval-gate.ts";
+import { createTraceSession, type TraceSession } from "../../tracing/trace-session.ts";
+import { loadSchedules, addSchedule, removeSchedule, getDueSchedules, markFired, formatSchedule, type ScheduleType } from "../../scheduler/persistent-scheduler.ts";
 
 const DESTRUCTIVE_KEYWORDS = /\b(delete|drop|force push|rm -rf|reset --hard)\b/i;
 const MAX_MSG_LEN = 4096;
@@ -28,6 +31,9 @@ export interface CommandContext {
   _lastInput: string | null;
   _lastOutput: string | null;
   _inputTime: number | null;
+  _activeTrace: TraceSession | null;
+  _sessionId: string | null;
+  _kiroModel: string;
 }
 
 export function createCommandContext(): CommandContext {
@@ -47,6 +53,9 @@ export function createCommandContext(): CommandContext {
     _lastInput: null,
     _lastOutput: null,
     _inputTime: null,
+    _activeTrace: null,
+    _sessionId: null,
+    _kiroModel: "claude-sonnet-4",
   };
 }
 
@@ -80,6 +89,8 @@ export async function handleCommand(
         ctx._lastInput = held;
         ctx._lastOutput = null;
         ctx._inputTime = Date.now();
+        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+        ctx._activeTrace.begin(held);
         ctx.session.write(held);
       } else {
         await send("✅ Confirmed. Resuming.");
@@ -135,6 +146,8 @@ export async function handleCommand(
     ctx._lastInput = input;
     ctx._lastOutput = null;
     ctx._inputTime = Date.now();
+    ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+    ctx._activeTrace.begin(input);
     ctx.session.write(input);
     return;
   }
@@ -234,31 +247,70 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
   }, 3000);
 }
 
-/* istanbul ignore next -- platform-specific AppleScript, not unit-testable */
+/* istanbul ignore next -- platform-specific, not unit-testable */
 function captureLoginUrl(): string | null {
-  const scripts = [
-    `tell application "Google Chrome" to get URL of active tab of first window`,
-    `tell application "Safari" to get URL of front document`,
-  ];
-  for (const script of scripts) {
+  if (process.platform === "darwin") {
+    const scripts = [
+      `tell application "Google Chrome" to get URL of active tab of first window`,
+      `tell application "Safari" to get URL of front document`,
+    ];
+    for (const script of scripts) {
+      try {
+        const url = execSync(`osascript -e '${script}'`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+        if (url.startsWith("http")) return url;
+      } catch { /* browser not available */ }
+    }
+  } else if (process.platform === "win32") {
+    // Use PowerShell to get URL from Chrome/Edge via remote debugging or clipboard trick
+    const ps = `
+$browsers = @('chrome','msedge')
+foreach ($name in $browsers) {
+  $p = Get-Process $name -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if ($p) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@
+    [Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 200
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.Clipboard]::Clear()
+    [System.Windows.Forms.SendKeys]::SendWait('^l')
+    Start-Sleep -Milliseconds 100
+    [System.Windows.Forms.SendKeys]::SendWait('^c')
+    Start-Sleep -Milliseconds 100
+    $url = [System.Windows.Forms.Clipboard]::GetText()
+    [System.Windows.Forms.SendKeys]::SendWait('{ESCAPE}')
+    if ($url -match '^https?://') { Write-Output $url; exit 0 }
+  }
+}`;
     try {
-      const url = execSync(`osascript -e '${script}'`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+      const url = execSync(`powershell -NoProfile -STA -Command "${ps.replace(/"/g, '\\"').replace(/\n/g, " ")}"`, { timeout: 5000, stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
       if (url.startsWith("http")) return url;
     } catch { /* browser not available */ }
   }
   return null;
 }
 
-/* istanbul ignore next -- platform-specific AppleScript, not unit-testable */
+/* istanbul ignore next -- platform-specific, not unit-testable */
 function closeBrowserTab(): void {
-  const scripts = [
-    `tell application "Google Chrome" to close active tab of first window`,
-    `tell application "Safari" to close front document`,
-  ];
-  for (const script of scripts) {
+  if (process.platform === "darwin") {
+    const scripts = [
+      `tell application "Google Chrome" to close active tab of first window`,
+      `tell application "Safari" to close front document`,
+    ];
+    for (const script of scripts) {
+      try {
+        execSync(`osascript -e '${script}'`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] });
+        return;
+      } catch { /* browser not available */ }
+    }
+  } else if (process.platform === "win32") {
     try {
-      execSync(`osascript -e '${script}'`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] });
-      return;
+      execSync(`powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^w')"`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] });
     } catch { /* browser not available */ }
   }
 }
@@ -317,10 +369,11 @@ async function replayCallbackUrl(url: string, ctx: CommandContext, send: SendFn)
 async function startSession(ctx: CommandContext, send: SendFn) {
   const adapter = getAdapter(ctx.adapterName);
   const timeoutMs = readEnvNumber("KIRO_TIMEOUT_MS", 300_000);
-  ctx.session = createModelSession({ adapter, cwd: ctx.cwd, timeoutMs });
+  ctx._sessionId = randomUUID();
+  ctx.session = createModelSession({ adapter, cwd: ctx.cwd, model: ctx._kiroModel, timeoutMs });
   wireSession(ctx, send);
   ctx.session.start();
-  await send(`✅ Started ${adapter.name} session in ${ctx.cwd}`);
+  await send(`✅ Started ${adapter.name} (${ctx._kiroModel}) in ${ctx.cwd}`);
 }
 
 async function cmdStop(ctx: CommandContext, send: SendFn) {
@@ -334,6 +387,7 @@ async function cmdStop(ctx: CommandContext, send: SendFn) {
   }
   ctx.session.kill();
   ctx.session = null;
+  ctx._sessionId = null;
   ctx.queue = [];
   if (ctx.taskQueue) ctx.taskQueue.drain();
   try {
@@ -420,28 +474,54 @@ async function cmdUndo(ctx: CommandContext, send: SendFn) {
   await send("↩️ Undo requested.", true);
 }
 
+const KIRO_MODELS = [
+  "auto", "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5",
+  "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+  "deepseek-3.2", "minimax-m2.5", "minimax-m2.1", "glm-5", "qwen3-coder-next",
+];
+
 async function cmdModel(text: string, ctx: CommandContext, send: SendFn) {
   const arg = text.replace("/model", "").trim();
   if (!arg) {
-    await send(
-      `Current: ${ctx.adapterName}\nAvailable: ${listAdapters().join(", ")}`
-    );
+    let models = "";
+    try {
+      const out = execSync("kiro-cli chat --list-models --format json", { timeout: 10000, encoding: "utf-8" });
+      const data = JSON.parse(out);
+      models = data.models.map((m: { model_name: string; rate_multiplier: number; description: string }) =>
+        `• ${m.model_name === ctx._kiroModel ? "▸ " : ""}${m.model_name} (${m.rate_multiplier}x) — ${m.description}`
+      ).join("\n");
+    } catch { /* fallback */ }
+    const current = `Adapter: ${ctx.adapterName}\nActive model: ${ctx._kiroModel}`;
+    await send(models ? `${current}\n\n${models}` : current);
     return;
   }
-  // Validate adapter exists
+
+  // Check if arg is a kiro model name
+  if (KIRO_MODELS.includes(arg)) {
+    ctx._kiroModel = arg;
+    if (ctx.session && ctx.session.state() !== "stopped") {
+      ctx.session.kill();
+      ctx.session = null;
+      await send(`Switched to ${arg}. Restarting session...`);
+      return cmdStart(ctx, send);
+    }
+    await send(`Model set to ${arg}. Send /start to begin.`);
+    return;
+  }
+
+  // Check if arg is an adapter name
   try {
     getAdapter(arg);
   } catch {
-    await send(`Unknown adapter "${arg}". Available: ${listAdapters().join(", ")}`);
+    await send(`Unknown model/adapter "${arg}".\nKiro models: ${KIRO_MODELS.join(", ")}\nAdapters: ${listAdapters().join(", ")}`);
     return;
   }
-  // Hot-swap
   if (ctx.session && ctx.session.state() !== "stopped") {
     ctx.session.kill();
     ctx.session = null;
   }
   ctx.adapterName = arg;
-  await send(`Switched to ${arg}. Send /start to begin.`);
+  await send(`Switched to adapter ${arg}. Send /start to begin.`);
 }
 
 async function cmdProject(text: string, ctx: CommandContext, send: SendFn) {
@@ -464,33 +544,47 @@ async function cmdProject(text: string, ctx: CommandContext, send: SendFn) {
   await send(`📂 Project set to ${resolved}. Send /start to begin.`);
 }
 
-async function cmdSchedule(text: string, ctx: CommandContext, send: SendFn) {
+async function cmdSchedule(text: string, _ctx: CommandContext, send: SendFn) {
   const arg = text.replace("/schedule", "").trim();
+
+  // List schedules
   if (!arg) {
-    if (ctx.scheduled.length === 0) {
+    const entries = loadSchedules();
+    if (entries.length === 0) {
       await send("No scheduled commands.");
       return;
     }
-    const list = ctx.scheduled
-      .map((s) => {
-        const d = new Date(s.time);
-        return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")} — ${s.message}`;
-      })
-      .join("\n");
-    await send(list);
+    await send(entries.map(formatSchedule).join("\n"));
     return;
   }
-  const match = arg.match(/^(\d{2}):(\d{2})\s+(.+)$/);
-  if (!match) {
-    await send("Usage: /schedule HH:MM <message>");
+
+  // Remove schedule
+  const removeMatch = arg.match(/^remove\s+(\d+)$/i);
+  if (removeMatch) {
+    const removed = removeSchedule(parseInt(removeMatch[1]));
+    await send(removed ? "✅ Schedule removed." : "❌ Schedule not found.");
     return;
   }
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(parseInt(match[1]), parseInt(match[2]), 0, 0);
-  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-  ctx.scheduled.push({ time: target.getTime(), message: match[3] });
-  await send(`⏰ Scheduled for ${match[1]}:${match[2]}: "${match[3]}"`);
+
+  // Add schedule: /schedule <type> HH:MM <message>
+  // or shorthand: /schedule HH:MM <message> (defaults to "once")
+  const fullMatch = arg.match(/^(once|daily|weekdays|weekends)\s+(\d{2}):(\d{2})\s+(.+)$/i);
+  const shortMatch = arg.match(/^(\d{2}):(\d{2})\s+(.+)$/);
+
+  if (fullMatch) {
+    const type = fullMatch[1].toLowerCase() as ScheduleType;
+    const entry = addSchedule(type, parseInt(fullMatch[2]), parseInt(fullMatch[3]), fullMatch[4]);
+    await send(`⏰ ${formatSchedule(entry)}`);
+    return;
+  }
+
+  if (shortMatch) {
+    const entry = addSchedule("once", parseInt(shortMatch[1]), parseInt(shortMatch[2]), shortMatch[3]);
+    await send(`⏰ ${formatSchedule(entry)}`);
+    return;
+  }
+
+  await send("Usage:\n/schedule <daily|weekdays|weekends|once> HH:MM <message>\n/schedule HH:MM <message> (one-time)\n/schedule remove <id>\n/schedule (list all)");
 }
 
 export function normalizeOutput(text: string): string {
@@ -572,6 +666,9 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 
   ctx.session.onOutput((text) => {
 
+    // Capture output for tracing
+    if (ctx._activeTrace) ctx._activeTrace.captureOutput(text);
+
     // Destructive action check (output-level, second safety layer)
     if (DESTRUCTIVE_KEYWORDS.test(text) && !ctx.pendingConfirmation) {
       ctx.pendingConfirmation = "__output__";
@@ -603,6 +700,12 @@ function wireSession(ctx: CommandContext, send: SendFn) {
   });
 
   ctx.session.onIdle(() => {
+    // End active trace
+    if (ctx._activeTrace) {
+      ctx._activeTrace.end(0).catch(() => {});
+      ctx._activeTrace = null;
+    }
+
     // Log completed interaction
     if (ctx._lastInput && ctx._lastOutput) {
       appendTaskLog({
@@ -625,6 +728,8 @@ function wireSession(ctx: CommandContext, send: SendFn) {
         ctx._lastInput = next.prompt;
         ctx._lastOutput = null;
         ctx._inputTime = Date.now();
+        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+        ctx._activeTrace.begin(next.prompt);
         ctx.session.write(next.prompt);
       }
     } else {
@@ -633,6 +738,11 @@ function wireSession(ctx: CommandContext, send: SendFn) {
   });
 
   ctx.session.onExit((code) => {
+    // End active trace on unexpected exit
+    if (ctx._activeTrace) {
+      ctx._activeTrace.end(code).catch(() => {});
+      ctx._activeTrace = null;
+    }
     if (ctx.taskQueue?.current()) {
       ctx.taskQueue.markFailed();
     }
@@ -642,7 +752,8 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 }
 
 // Scheduler tick — call this periodically
-export function tickScheduler(ctx: CommandContext) {
+export function tickScheduler(ctx: CommandContext, send?: SendFn) {
+  // Legacy in-memory schedules
   const now = Date.now();
   const due = ctx.scheduled.filter((s) => s.time <= now);
   ctx.scheduled = ctx.scheduled.filter((s) => s.time > now);
@@ -653,6 +764,29 @@ export function tickScheduler(ctx: CommandContext) {
       } else {
         ctx.session.write(job.message);
       }
+    }
+  }
+
+  // Persistent recurring schedules
+  const dueEntries = getDueSchedules();
+  for (const { entry } of dueEntries) {
+    markFired(entry.id);
+    if (ctx.session) {
+      if (send) send(`⏰ Firing scheduled: "${entry.message}"`, true).catch(() => {});
+      if (ctx.session.state() === "processing") {
+        ctx.queue.push(entry.message);
+      } else {
+        ctx._lastInput = entry.message;
+        ctx._lastOutput = null;
+        ctx._inputTime = Date.now();
+        if (ctx._sessionId) {
+          ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, ctx._kiroModel);
+          ctx._activeTrace.begin(entry.message);
+        }
+        ctx.session.write(entry.message);
+      }
+    } else if (send) {
+      send(`⏰ Scheduled "${entry.message}" fired but no active session. Send /start first.`).catch(() => {});
     }
   }
 }
