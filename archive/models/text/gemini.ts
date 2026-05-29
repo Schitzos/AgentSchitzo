@@ -31,7 +31,6 @@ async function retryGemini(prompt: string, retries: number) {
     return null;
   }
 
-  console.log("Retrying Gemini...");
   await waitBeforeRetry();
   return callGemini(prompt, retries - 1);
 }
@@ -49,21 +48,18 @@ export async function callGemini(prompt: string, retries = 2) {
     });
 
     if (res.ok === false) {
-      console.log("Gemini HTTP error:", res.status, res.statusText);
       return retryGemini(prompt, retries);
     }
 
     const data = (await res.json()) as GeminiResponse;
 
     if (data.error) {
-      console.log("Gemini error:", data.error.message);
       return retryGemini(prompt, retries);
     }
 
     return getResponseText(data);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.log("Gemini fetch error:", message);
     return retryGemini(prompt, retries);
   }
 }

@@ -1,32 +1,40 @@
 import { promises as fs } from "fs";
 import path from "path";
 
-export function resolveTaskLogPath() {
+export interface TaskLogEntry {
+  id: number;
+  timestamp: string;
+  prompt: string;
+  plan: string;
+  output: string;
+  status: "done" | "failed";
+  filesChanged: string[];
+  testsPassed: boolean | null;
+  durationMs: number;
+}
+
+export function resolveTaskLogPath(): string {
   return path.join(process.cwd(), "logs", "task-log.json");
 }
 
-function normalizeText(value) {
+export function normalizeText(value: unknown): string {
   return `${value || ""}`
     .replace(/\r?\n+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function normalizePlan(plan) {
+export function normalizePlan(plan: unknown): string {
   return normalizeText(Array.isArray(plan) ? plan.join(", ") : plan);
 }
 
-function formatLogDate(date) {
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+export function formatLogDate(date: Date): string {
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const day = `${date.getDate()}`.padStart(2, "0");
-  const year = `${date.getFullYear()}`;
-  const hours = `${date.getHours()}`.padStart(2, "0");
-  const minutes = `${date.getMinutes()}`.padStart(2, "0");
-
-  return `${month}/${day}/${year} ${hours}:${minutes}`;
+  return `${day} ${months[date.getMonth()]} ${date.getFullYear()}`;
 }
 
-async function readTaskLogEntries(logFilePath) {
+export async function readTaskLogEntries(logFilePath: string): Promise<TaskLogEntry[]> {
   try {
     const content = await fs.readFile(logFilePath, "utf8");
 
@@ -36,8 +44,8 @@ async function readTaskLogEntries(logFilePath) {
 
     const parsed = JSON.parse(content);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
+  } catch (error: unknown) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return [];
     }
 
@@ -46,19 +54,60 @@ async function readTaskLogEntries(logFilePath) {
 }
 
 export async function appendTaskLog({
+  prompt,
   plan,
   output,
-  logFilePath = resolveTaskLogPath(),
-  now = new Date()
-}) {
+  status = "done",
+  filesChanged = [],
+  testsPassed = null,
+  startedAt,
+  /* istanbul ignore next */ logFilePath = resolveTaskLogPath(),
+  /* istanbul ignore next */ now = new Date(),
+}: {
+  prompt: string;
+  plan: unknown;
+  output: unknown;
+  status?: "done" | "failed";
+  filesChanged?: string[];
+  testsPassed?: boolean | null;
+  startedAt?: number;
+  logFilePath?: string;
+  now?: Date;
+}): Promise<void> {
   await fs.mkdir(path.dirname(logFilePath), { recursive: true });
 
   const entries = await readTaskLogEntries(logFilePath);
-  entries.push({
-    date: formatLogDate(now),
+  const entry: TaskLogEntry = {
+    id: entries.length + 1,
+    timestamp: now.toISOString(),
+    prompt: normalizeText(prompt),
     plan: normalizePlan(plan),
-    output: normalizeText(output)
-  });
+    output: normalizeText(output),
+    status,
+    filesChanged,
+    testsPassed,
+    durationMs: startedAt ? now.getTime() - startedAt : 0,
+  };
+  entries.push(entry);
 
   await fs.writeFile(logFilePath, JSON.stringify(entries, null, 2), "utf8");
+}
+
+export async function searchTaskLog(
+  query: string,
+  /* istanbul ignore next */ logFilePath = resolveTaskLogPath(),
+  limit = 5
+): Promise<TaskLogEntry[]> {
+  const entries = await readTaskLogEntries(logFilePath);
+  if (!query) return entries.slice(-limit);
+
+  const lower = query.toLowerCase();
+  return entries
+    .filter(
+      (e) =>
+        e.prompt.toLowerCase().includes(lower) ||
+        e.plan.toLowerCase().includes(lower) ||
+        e.output.toLowerCase().includes(lower)
+    )
+    .slice(-limit);
 }

@@ -1,4 +1,4 @@
-export function buildCodexPrompt(command, plan = []) {
+export function buildCodexPrompt(command: string, plan: string[] = []): string {
   const trimmedPlan = plan.join(", ");
 
   if (!trimmedPlan) {
@@ -12,15 +12,19 @@ export function buildCodexPrompt(command, plan = []) {
     "Suggested plan from Model:",
     trimmedPlan,
     "",
-    "Execute the task. Use the user request as source of truth. Treat the plan as guidance, not a hard constraint."
+    "Execute the task. Use the user request as source of truth. Treat the plan as guidance, not a hard constraint.",
   ].join("\n");
 }
 
 export function buildVerificationRepairPrompt({
   command,
   previousOutput,
-  verificationOutput
-}) {
+  verificationOutput,
+}: {
+  command: string;
+  previousOutput: string;
+  verificationOutput: string;
+}): string {
   return [
     "The previous Codex attempt completed the task, but project verification still failed.",
     "",
@@ -35,11 +39,11 @@ export function buildVerificationRepairPrompt({
     "",
     "Fix the codebase so `npm run typecheck` passes and Jest verification for changed files passes.",
     "Keep changed-file branch coverage greater than 90% when coverage is reported.",
-    "Do not stop at explanation. Make the necessary code and test changes, then finish."
+    "Do not stop at explanation. Make the necessary code and test changes, then finish.",
   ].join("\n");
 }
 
-export function extractJSON(text) {
+export function extractJSON(text: string): Record<string, unknown> | null {
   const cleaned = text
     .replace(/```json/g, "")
     .replace(/```/g, "")

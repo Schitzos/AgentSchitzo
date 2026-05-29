@@ -264,7 +264,6 @@ export function runCodex(
   options: CodexRunOptions = {}
 ) {
   return new Promise<CodexResult>((resolve) => {
-    console.log("Running Codex...");
 
     const outputFile = buildOutputFilePath();
     const codexProcess = resolveCodexCommand();
@@ -316,7 +315,6 @@ export function runCodex(
         });
 
         child.on("close", async (code) => {
-          console.log("Codex finished with code:", code);
           try {
             const workspaceAfter = await safeBuildWorkspaceSnapshot();
             await writeLastCodexRun(

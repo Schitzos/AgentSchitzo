@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentschitzo.telegram</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/rizkyrachmawan/.nvm/versions/node/v20.20.0/bin/npx</string>
+        <string>tsx</string>
+        <string>telegram-listener.ts</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/logs/launchd-out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/logs/launchd-err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/rizkyrachmawan/.nvm/versions/node/v20.20.0/bin:/Users/rizkyrachmawan/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

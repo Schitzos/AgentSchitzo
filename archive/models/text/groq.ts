@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { readRequiredEnv } from "../../utils/env.ts";
 import type { GroqChatRequest } from "../../types/models/text/groq.ts";
 
-const GROQ_MODEL = "llama-3.1-8b-instant";
+export const GROQ_MODEL = "llama-3.1-8b-instant";
 
 const client = new OpenAI({
   apiKey: readRequiredEnv("GROQ_API_KEY"),
@@ -37,7 +37,6 @@ export async function callGroq(prompt: string) {
     return completion.choices[0].message.content;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.log("Groq error:", message);
     return null;
   }
 }

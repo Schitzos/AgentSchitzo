@@ -3,7 +3,7 @@ import path from "path";
 
 let envLoaded = false;
 
-function parseEnvLine(line) {
+export function parseEnvLine(line: string): { key: string; value: string } | null {
   const trimmedLine = line.trim();
   if (!trimmedLine || trimmedLine.startsWith("#")) {
     return null;
@@ -31,7 +31,7 @@ function parseEnvLine(line) {
   return { key, value };
 }
 
-export function loadEnvFile(filePath = path.join(process.cwd(), ".env")) {
+export function loadEnvFile(filePath = path.join(process.cwd(), ".env")): void {
   if (envLoaded) {
     return;
   }
@@ -53,7 +53,7 @@ export function loadEnvFile(filePath = path.join(process.cwd(), ".env")) {
   }
 }
 
-export function readRequiredEnv(name) {
+export function readRequiredEnv(name: string): string {
   loadEnvFile();
 
   const value = process.env[name];
@@ -64,14 +64,19 @@ export function readRequiredEnv(name) {
   return value;
 }
 
-export function readEnv(name, fallback) {
+export function readEnv(name: string, fallback: string): string {
   loadEnvFile();
   return process.env[name] || fallback;
 }
 
-export function readEnvNumber(name, fallback) {
+export function readEnvNumber(name: string, fallback: number): number {
   loadEnvFile();
 
   const value = Number(process.env[name] || fallback);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/** Reset loaded state — only for testing. */
+export function _resetEnvLoaded(): void {
+  envLoaded = false;
 }
