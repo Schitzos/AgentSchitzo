@@ -81,6 +81,25 @@ describe("handleCommand", () => {
     expect(send).toHaveBeenCalledWith(expect.stringContaining("/stop"));
   });
 
+  it("/provider lists supported providers", async () => {
+    await handleCommand("/provider", ctx, send);
+    expect(send).toHaveBeenCalledWith("kiro\ncodex-cli\ngemini-cli");
+  });
+
+  it("/provider switches to codex-cli and starts a new session", async () => {
+    await handleCommand("/start", ctx, send);
+    const oldSession = ctx.session;
+    send.mockClear();
+
+    await handleCommand("/provider codex-cli", ctx, send);
+
+    expect(oldSession?.kill).toHaveBeenCalled();
+    expect(ctx.adapterName).toBe("codex-cli");
+    expect(ctx.session).not.toBeNull();
+    expect(send).toHaveBeenCalledWith("Switched provider to codex-cli. Starting session...");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Started codex-cli"));
+  });
+
   it("/start creates a session", async () => {
     await handleCommand("/start", ctx, send);
     expect(ctx.session).not.toBeNull();
@@ -156,6 +175,30 @@ describe("handleCommand", () => {
   it("/model shows current", async () => {
     await handleCommand("/model", ctx, send);
     expect(send).toHaveBeenCalledWith(expect.stringContaining("kiro"));
+  });
+
+  it("/model follows the current provider", async () => {
+    await handleCommand("/provider codex-cli", ctx, send);
+    send.mockClear();
+
+    await handleCommand("/model", ctx, send);
+
+    expect(send).toHaveBeenCalledWith(
+      "Adapter: codex-cli\nActive model: gpt-5.5\n\n▸ 1. gpt-5.5\n• 2. gpt-5.4\n• 3. gpt-5.4-mini\n• 4. gpt-5.3-codex\n• 5. gpt-5.2"
+    );
+  });
+
+  it("/model sets the current provider model and restarts the session", async () => {
+    await handleCommand("/provider codex-cli", ctx, send);
+    const oldSession = ctx.session;
+    send.mockClear();
+
+    await handleCommand("/model gpt-5.2", ctx, send);
+
+    expect(oldSession?.kill).toHaveBeenCalled();
+    expect(ctx.session).not.toBeNull();
+    expect(send).toHaveBeenCalledWith("Switched to gpt-5.2. Restarting session...");
+    expect(send).toHaveBeenCalledWith(expect.stringContaining("Started codex-cli (gpt-5.2)"));
   });
 
   it("/model unknown errors", async () => {

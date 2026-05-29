@@ -1,69 +1,50 @@
 # Requirements: AgentSchitzo
 
-## Core Functions
+## Surfaces
 
-### Session
-- Each command = unique `session_id` (UUID v4)
-- Track: adapter, start/end time, exit code, cwd
-- One active session per chat
-- Commands: `/start`, `/stop`, `/interrupt`, `/status`
+Telegram bot + Browser app (PWA). Both share same execution/session layer.
 
-### CLI Adapters
-- Configurable via `MODEL_ADAPTER` env (default: `kiro`)
-- `/model <name>` hot-swap at runtime
-- Interface: `name`, `command`, `buildArgs()`, optional `detectLoginUrl()`
-- Supported: `kiro` (primary), `codex-cli`, `gemini-cli`, `local-llm`
+## Session
 
-### Execution & Capture
-- Spawn CLI with piped stdio
-- Real-time stdout/stderr capture
-- Post-execution: `git diff` capture
-- Strip ANSI codes, buffer 500ms debounce
+- UUID per execution. Tracks: provider, model, time, exit code, cwd.
+- Active/inactive state. Shared across Telegram & browser.
 
-### Langfuse Tracing
-- Session start → Langfuse trace w/ `session_id` + metadata
-- Each command → span (input, output, duration, exit code)
-- File diffs → span metadata
-- Stderr → separate event/observation
-- Non-blocking (continues if Langfuse unavailable)
+## Provider/Model
 
-### Telegram Integration
-- Non-command messages → CLI stdin
-- CLI output → Telegram (4096 char limit)
-- Login URL detection → immediate send
-- Message queue while processing
-- Only `TELEGRAM_CHAT_ID` allowed
-- `/verbose` toggle, `/history` summaries
+- Providers: kiro, codex-cli, gemini-cli, local-llm. Runtime switchable.
+- Model selection per provider. Credit-based cost tracking.
 
-### File & Project
-- `/project <path>` → kill session, start new in dir
-- File/photo uploads → `./uploads/` + notify tool
-- `/undo` → revert instruction to CLI
+## Execution
 
-## Non-Functional
-- Async I/O (no blocking Telegram poll)
-- Fire-and-forget Langfuse calls
-- Graceful shutdown (kill child)
-- 4096 char message splits
-- 5min silence timeout warning
-- Structured JSON metadata
+- Piped stdio. Realtime stdout/stderr capture. Git diff after exit.
+- Prompt history preserved per session. Duration/cost/tokens on trace.
+
+## Telegram
+
+- `/start`, `/stop`, `/interrupt`, `/status`, `/model`, `/provider`, `/project`, `/history`, `/schedule`, `/help`
+- Non-command → forward to provider. Output → Telegram.
+
+## Browser App (PWA)
+
+- React + Vite. Desktop-first, mobile-usable. Installable PWA.
+- **Chat**: send prompts, view history, select provider/model.
+- **Dashboard**: total cost, provider/model breakdown, usage timeline, top models, latency chart.
+- **Trace**: session list (active/inactive), prompt history, date filter, columns: id/time/provider/model/cost/duration/tokens.
+- **Realtime**: live execution graph (pipeline viz), clickable blocks → trace detail, provider/model/cost per block. WebSocket transport.
+
+## API
+
+- HTTP endpoints: dashboard metrics, traces, sessions, chat submit, provider/model select.
+- Realtime events: session.started/updated/output/completed, trace.updated, cost.updated.
+
+## NFR
+
+- Browser responsive during execution. Near-live realtime. Langfuse failures non-blocking. PWA installable. JSON responses.
 
 ## Env Vars
-| Var | Required | Default | Description |
-|-----|----------|---------|-------------|
-| `TELEGRAM_TOKEN` | Yes | — | Bot token |
-| `TELEGRAM_CHAT_ID` | Yes | — | Allowed chat |
-| `TELEGRAM_POLL_INTERVAL_MS` | No | 3000 | Poll interval |
-| `MODEL_ADAPTER` | No | `kiro` | Active adapter |
-| `LOCAL_LLM_COMMAND` | If local-llm | — | Command |
-| `LOCAL_LLM_ARGS` | No | `[]` | JSON args |
-| `KIRO_TIMEOUT_MS` | No | 300000 | Silence threshold |
-| `LANGFUSE_PUBLIC_KEY` | No | — | Public key |
-| `LANGFUSE_SECRET_KEY` | No | — | Secret key |
-| `LANGFUSE_HOST` | No | cloud.langfuse.com | Endpoint |
+
+`TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_POLL_INTERVAL_MS`, `MODEL_ADAPTER`, `LOCAL_LLM_COMMAND`, `LOCAL_LLM_ARGS`, `KIRO_TIMEOUT_MS`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`
 
 ## Out of Scope
-- Multi-session per chat
-- Model routing/classification
-- Code verification pipeline
-- Response quality eval
+
+Multi-user auth. Multi-workspace. Full Langfuse replacement. Exact billing if provider CLI doesn't expose usage.

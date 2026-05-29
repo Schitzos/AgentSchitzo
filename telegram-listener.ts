@@ -11,6 +11,9 @@ import {
 } from "./telegram/application/handle-telegram-command.ts";
 import { readEnv, readEnvNumber, readRequiredEnv } from "./utils/env.ts";
 import { scheduleDailyClearUploads } from "./cron/clear-uploads.ts";
+import { startApiServer } from "./server/index.ts";
+import { setChatBridge, setSessionStartBridge, setSessionNewBridge, setSessionDeleteBridge, setProjectBridge } from "./server/api-routes.ts";
+import { sessionStore } from "./server/session-store.ts";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -190,6 +193,78 @@ if (isMainModule) {
 
   setInterval(() => tickScheduler(ctx, send), 30_000);
   scheduleDailyClearUploads();
+  startApiServer();
+
+  // Separate web session context (Option A: independent from Telegram)
+  const webCtx: CommandContext = createCommandContext();
+  webCtx.source = "web";
+  // Web send: emit to WebSocket only, not Telegram. Do NOT emit session.output here
+  // (wireSession already emits it via wsEmit in handle-telegram-command.ts)
+  const webSend: SendFn = async (text: string) => {
+    const { emit: wsEmit } = await import("./server/ws-emitter.ts");
+    wsEmit("session.updated", { sessionId: webCtx._sessionId ?? "web", message: text, source: "web" });
+    return true;
+  };
+
+  let startingSession: Promise<void> | null = null;
+
+  async function ensureSession() {
+    if (webCtx.session && webCtx.session.state() !== "stopped") return;
+    if (startingSession) { await startingSession; return; }
+    startingSession = handleCommand("/start", webCtx, webSend);
+    try { await startingSession; } finally { startingSession = null; }
+  }
+
+  setSessionStartBridge(async () => {
+    if (webCtx.session && webCtx.session.state() !== "stopped") {
+      return { ok: true, message: "Session already active" };
+    }
+    await ensureSession();
+    return { ok: true, message: "Session started" };
+  });
+
+  setSessionNewBridge(async () => {
+    if (webCtx.session && webCtx.session.state() !== "stopped") {
+      await handleCommand("/stop", webCtx, webSend);
+    }
+    await handleCommand("/start", webCtx, webSend);
+    return { ok: true, sessionId: webCtx._sessionId, message: "New session started" };
+  });
+
+  setSessionDeleteBridge((id: string) => {
+    if (webCtx._sessionId === id && webCtx.session && webCtx.session.state() !== "stopped") {
+      webCtx.session.kill();
+      webCtx.session = null;
+      webCtx._sessionId = null;
+    }
+  });
+
+  setProjectBridge((dir: string) => {
+    if (!dir) return { ok: true, cwd: webCtx.cwd, message: "" };
+    const resolved = path.resolve(dir);
+    if (!fs.existsSync(resolved)) return { ok: false, cwd: webCtx.cwd, message: `Path not found: ${resolved}` };
+    if (webCtx.session && webCtx.session.state() !== "stopped") {
+      webCtx.session.kill();
+      webCtx.session = null;
+    }
+    webCtx.cwd = resolved;
+    return { ok: true, cwd: resolved, message: `Project set to ${resolved}` };
+  });
+
+  setChatBridge(async (prompt: string, sessionId?: string) => {
+    await ensureSession();
+    if (!webCtx.session) {
+      return { queued: false, sessionActive: false, message: "Failed to start session" };
+    }
+    if (sessionId && sessionId !== webCtx._sessionId) {
+      if (webCtx._sessionId) sessionStore.endSession(webCtx._sessionId, null);
+      webCtx._sessionId = sessionId;
+      const existing = sessionStore.getSession(sessionId);
+      if (existing) sessionStore.upsertSession({ ...existing, active: true, endedAt: undefined });
+    }
+    await handleCommand(prompt, webCtx, webSend);
+    return { queued: webCtx.session.state() === "processing", sessionActive: true, sessionId: webCtx._sessionId ?? undefined, message: "Sent" };
+  });
 
   async function startPolling() {
     let offset = 0;
@@ -203,8 +278,10 @@ if (isMainModule) {
       try {
         const updates = (await api.getUpdates(offset)) as TelegramUpdate[];
         for (const update of updates) {
+          try {
+            await processUpdate(update, ctx, send, { token: TELEGRAM_TOKEN, chatId: TELEGRAM_CHAT_ID });
+          } catch { /* skip failed update */ }
           offset = update.update_id;
-          await processUpdate(update, ctx, send, { token: TELEGRAM_TOKEN, chatId: TELEGRAM_CHAT_ID });
         }
       } catch { /* network error, retry next tick */ }
       setTimeout(poll, POLL_INTERVAL);

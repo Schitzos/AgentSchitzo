@@ -111,7 +111,7 @@ describe("createModelSession", () => {
     session.interrupt();
 
     expect(spawnedProc.kill).toHaveBeenCalledWith("SIGINT");
-    expect(session.state()).toBe("idle");
+    expect(session.state()).toBe("processing");
   });
 
   it("kill sends SIGTERM and calls exit callback", () => {

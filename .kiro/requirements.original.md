@@ -1,68 +1,114 @@
 # Requirements: AgentSchitzo
 
+## Product Direction
+
+AgentSchitzo must support two operator surfaces:
+
+- Telegram bot
+- Browser app
+
+The browser app is not just an analytics view. It is also an execution surface that lets the user chat with providers, inspect traces, and monitor usage. The browser app must be installable as a PWA.
+
 ## Functional Requirements
 
 ### Session Management
 
 1. Each command execution creates a unique `session_id` (UUID v4).
-2. Session tracks: adapter used, start time, end time, exit code, working directory.
-3. Only one active session per chat at a time.
-4. `/start` spawns the configured CLI tool as a child process.
-5. `/stop` kills the active session.
-6. `/interrupt` sends SIGINT to the running process.
-7. `/status` shows current session state (idle, processing, not running).
+2. Session tracks: provider, model, start time, end time, exit code, working directory.
+3. Session also tracks whether it is active or inactive.
+4. Browser and Telegram must share the same execution/session layer.
+5. `/start`, `/stop`, `/interrupt`, `/status` remain available in Telegram.
+6. Browser chat prompts also create and extend sessions.
 
-### CLI Adapter System
+### Provider and Model System
 
-8. Active adapter is configurable via `MODEL_ADAPTER` env var (default: `kiro`).
-9. `/model <name>` hot-swaps the adapter at runtime.
-10. Each adapter implements: `name`, `command`, `buildArgs()`, optional `detectLoginUrl()`.
-11. Supported adapters: `kiro` (primary), `codex-cli`, `gemini-cli`, `local-llm`.
-12. Adding a new adapter requires only implementing the `CliModelAdapter` interface.
+7. Active provider is configurable via `MODEL_ADAPTER`.
+8. Supported providers: `kiro`, `codex-cli`, `gemini-cli`, `local-llm`.
+9. Provider can be switched at runtime from Telegram and browser UI.
+10. Model selection is provider-aware.
+11. Pricing calculation is provider-aware and model-aware.
 
-### Execution & Capture
+### Execution and Capture
 
-13. CLI tool is spawned with piped stdio (`stdin`, `stdout`, `stderr`).
-14. All stdout/stderr output is captured in real-time.
-15. After execution completes, capture file diffs via `git diff`.
-16. Strip ANSI escape codes from captured output before storing.
-17. Buffer rapid output chunks (500ms debounce) before forwarding.
-
-### Langfuse Tracing
-
-18. On session start, create a Langfuse trace with `session_id` and metadata.
-19. Each command execution creates a Langfuse span under the session trace.
-20. Span captures: input (user command), output (stdout), duration, exit code.
-21. File diffs are attached as span metadata.
-22. Stderr is captured as a separate event/observation on the span.
-23. Traces are grouped by `session_id` for multi-turn conversations.
-24. If Langfuse is unavailable, execution continues (tracing is non-blocking).
+12. CLI tools are spawned with piped stdio.
+13. Stdout and stderr are captured in real time.
+14. File diffs are captured after execution via `git diff`.
+15. Prompt history is preserved inside each session from first prompt to latest prompt.
+16. Duration, cost, token usage when available, provider, and model are associated with the trace/session.
 
 ### Telegram Integration
 
-25. Telegram messages (non-command) are forwarded to the CLI tool's stdin.
-26. CLI tool output is forwarded back to Telegram (respecting 4096 char limit).
-27. Login URLs detected in output are sent immediately to Telegram.
-28. Messages sent while tool is processing are queued and auto-sent when idle.
-29. Only the configured `TELEGRAM_CHAT_ID` can interact with the bot.
-30. `/verbose` toggles between summary-only and full streaming output.
-31. `/history` shows last N session summaries.
+17. Existing Telegram interaction remains supported.
+18. Telegram non-command messages are forwarded to the active provider session.
+19. Telegram output forwarding remains supported.
+20. Telegram provider/model/project/history/schedule commands remain supported.
 
-### File & Project Management
+### Browser App
 
-32. `/project <path>` kills current session, starts new one in specified directory.
-33. File/photo uploads are saved to `./uploads/` and the tool is notified.
-34. `/undo` sends a revert instruction to the CLI tool.
+21. Browser app must be built with React + Vite.
+22. Browser app must be installable as a PWA.
+23. Browser app must support desktop-first layout and remain usable on mobile.
+
+### Browser Menu: Chat
+
+24. A Chat menu must exist in the browser app.
+25. Chat is a browser bridge into AgentSchitzo execution, similar in feel to Codex / Claude Code / Gemini.
+26. User can send prompts from browser chat.
+27. User can view prompt/response history for the current session.
+28. User can choose provider and model from the browser app.
+
+### Browser Menu: Dashboard
+
+29. Dashboard must show a summary card with:
+   - total cost
+   - provider breakdown
+   - model breakdown
+30. Dashboard must show session usage timeline using Langfuse traces.
+31. Dashboard must show top 5 most-used models.
+32. Dashboard must show model latency chart.
+
+### Browser Menu: Trace
+
+33. Trace view must show list of sessions with active/inactive status.
+34. Trace/session details must show prompt history from first prompt to latest prompt.
+35. Session/trace list columns must include:
+   - session id
+   - time
+   - provider
+   - model
+   - cost
+   - duration
+   - token usage if available
+36. Trace view must include date-range filtering.
+37. If a session is active, user can open the realtime screen from that session entry.
+
+### Browser Menu: Realtime
+
+38. Realtime view must show a live graph similar to GitHub/GitLab pipeline visualization.
+39. Graph grows as prompts/execution steps happen.
+40. Clicking a graph block opens the related trace/session.
+41. Each block shows provider, model, and cost.
+42. Realtime transport may use WebSocket.
+
+### API and Backend
+
+43. Backend must expose HTTP API for browser app data and actions.
+44. Backend must expose realtime event stream for active sessions.
+45. Backend must provide endpoints for:
+   - dashboard metrics
+   - trace list
+   - session list
+   - session detail
+   - browser chat prompt submission
+   - provider/model changes
 
 ## Non-Functional Requirements
 
-1. CLI tool process must not block the Telegram polling loop (async I/O).
-2. Langfuse calls are fire-and-forget — never block execution.
-3. Graceful shutdown: kill child process when app stops.
-4. Output split at 4096 chars for Telegram message limit.
-5. Silence timeout (default 5min) warns user if tool appears stuck.
-6. Retain permission check (`TELEGRAM_CHAT_ID` allowlist).
-7. All tracing metadata is structured (JSON-serializable).
+1. Browser app must remain responsive while executions run.
+2. Realtime updates should be near-live.
+3. Langfuse failures must not block execution.
+4. Browser app should support standalone install mode as a PWA.
+5. Structured JSON responses are required for frontend consumption.
 
 ## Environment Variables
 
@@ -81,7 +127,7 @@
 
 ## Out of Scope
 
-- Multiple concurrent sessions per chat.
-- Model routing/classification (that's Neural Router's job).
-- Code verification pipeline (CLI tool handles its own workflow).
-- Response quality evaluation.
+- Multi-user auth
+- Multi-workspace tenancy
+- Full Langfuse replacement
+- Exact billing parity for every provider if the provider CLI does not expose exact usage

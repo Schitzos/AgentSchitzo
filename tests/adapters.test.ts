@@ -35,14 +35,16 @@ describe("adapters", () => {
     const a = getAdapter("gemini-cli");
     expect(a.name).toBe("gemini-cli");
     expect(a.command).toBe("gemini");
-    expect(a.buildArgs("/tmp")).toEqual([]);
+    expect(a.buildArgs("/tmp")).toEqual(["--skip-trust", "--prompt"]);
+    expect(a.buildArgs("/tmp", "gemini-2.5-pro")).toEqual(["--skip-trust", "--model", "gemini-2.5-pro", "--prompt"]);
   });
 
   it("codex-cli adapter has correct properties", () => {
     const a = getAdapter("codex-cli");
     expect(a.name).toBe("codex-cli");
     expect(a.command).toBe("codex");
-    expect(a.buildArgs("/tmp")).toEqual(["exec", "--full-auto", "-"]);
+    expect(a.buildArgs("/tmp")).toEqual(["exec", "--sandbox", "workspace-write"]);
+    expect(a.buildArgs("/tmp", "o3")).toEqual(["exec", "--sandbox", "workspace-write", "--model", "o3"]);
   });
 
   it("local-llm adapter has correct properties", () => {

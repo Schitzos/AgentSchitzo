@@ -68,6 +68,9 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
       env: { ...process.env },
     });
 
+    // Close stdin for CLIs that read from it (e.g. codex) to prevent hanging
+    if (adapter.closeStdin) proc.stdin?.end();
+
     const buffer = createOutputBuffer(debounceMs);
     buffer.onFlush((text) => {
       if (outputCb) outputCb(text);
@@ -96,7 +99,17 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
         /* istanbul ignore next */ if (url && loginUrlCb) loginUrlCb(url);
       }
 
-      if (stderrCb) stderrCb(text);
+      if (adapter.mergeStderr) {
+        // Filter out log noise (timestamps + ERROR/WARN lines, even inline)
+        const filtered = text.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+\w+\s+\S+:[^\n]*/g, "")
+          .replace(/^-{3,}$/gm, "")
+          .replace(/^(?:workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries|session id):.*$/gm, "")
+          .replace(/^(?:warning:).*$/gm, "")
+          .trim();
+        if (filtered) buffer.append(filtered);
+      } else if (stderrCb) {
+        stderrCb(text);
+      }
     });
 
     proc.on("exit", (code) => {
@@ -129,7 +142,10 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
     interrupt() {
       if (proc) {
         proc.kill("SIGINT");
-        currentState = "idle";
+        // Don't set state to idle here — let the proc "exit" handler do it.
+        // If process doesn't die within 5s, force kill it.
+        const p = proc;
+        setTimeout(() => { if (proc === p) p.kill("SIGKILL"); }, 5000);
       }
     },
     kill() {

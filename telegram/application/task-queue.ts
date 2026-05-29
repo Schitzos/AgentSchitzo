@@ -69,7 +69,7 @@ export function createTaskQueue(send: SendFn): TaskQueue {
         queue.push(entry);
         notify(entry, `${queue.length}`);
       }
-      return active || entry;
+      return entry;
     },
 
     current: () => active,

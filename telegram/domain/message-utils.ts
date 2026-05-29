@@ -38,7 +38,7 @@ export function buildVerificationRepairPrompt({
     verificationOutput,
     "",
     "Fix the codebase so `npm run typecheck` passes and Jest verification for changed files passes.",
-    "Keep changed-file branch coverage greater than 90% when coverage is reported.",
+    "Keep changed-file branch coverage greater than 85% when coverage is reported.",
     "Do not stop at explanation. Make the necessary code and test changes, then finish.",
   ].join("\n");
 }

@@ -23,8 +23,12 @@
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/cors": "2.8.17",
+    "@types/express": "4.17.21",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.6.0",
+    "@types/ws": "8.5.14",
     "eslint": "^10.2.0",
     "husky": "^9.1.7",
     "jest": "^30.3.0",
@@ -35,8 +39,12 @@
     "typescript-eslint": "^8.58.1"
   },
   "dependencies": {
+    "better-sqlite3": "11.10.0",
+    "cors": "2.8.5",
     "esprima": "^4.0.1",
+    "express": "4.21.2",
     "langfuse": "3.38.20",
-    "openai": "^6.34.0"
+    "openai": "^6.34.0",
+    "ws": "8.18.2"
   }
 }

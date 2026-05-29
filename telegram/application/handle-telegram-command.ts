@@ -11,12 +11,16 @@ import { searchTaskLog, appendTaskLog, formatLogDate, type TaskLogEntry } from "
 import { classifyRisk, buildApprovalPrompt } from "./approval-gate.ts";
 import { createTraceSession, type TraceSession } from "../../tracing/trace-session.ts";
 import { loadSchedules, addSchedule, removeSchedule, getDueSchedules, markFired, formatSchedule, type ScheduleType } from "../../scheduler/persistent-scheduler.ts";
+import { sessionStore } from "../../server/session-store.ts";
+import { emit as wsEmit } from "../../server/ws-emitter.ts";
+import { estimateCostUsd } from "../../tracing/model-pricing.ts";
 
 const DESTRUCTIVE_KEYWORDS = /\b(delete|drop|force push|rm -rf|reset --hard)\b/i;
 const MAX_MSG_LEN = 4096;
 
 export interface CommandContext {
   session: ModelSession | null;
+  source: "telegram" | "web";
   queue: string[];
   taskQueue: TaskQueue | null;
   verbose: boolean;
@@ -34,12 +38,14 @@ export interface CommandContext {
   _inputTime: number | null;
   _activeTrace: TraceSession | null;
   _sessionId: string | null;
-  _kiroModel: string;
+  _lastSessionAt: number;
+  _providerModels: Record<string, string>;
 }
 
 export function createCommandContext(): CommandContext {
   return {
     session: null,
+    source: "telegram",
     queue: [],
     taskQueue: null,
     verbose: false,
@@ -57,8 +63,22 @@ export function createCommandContext(): CommandContext {
     _inputTime: null,
     _activeTrace: null,
     _sessionId: null,
-    _kiroModel: "auto",
+    _lastSessionAt: 0,
+    _providerModels: {
+      kiro: "auto",
+      "codex-cli": "gpt-5.5",
+      "gemini-cli": "default",
+      "local-llm": "default",
+    },
   };
+}
+
+function getCurrentProviderModel(ctx: CommandContext): string {
+  return ctx._providerModels[ctx.adapterName] ?? "default";
+}
+
+function setCurrentProviderModel(ctx: CommandContext, model: string): void {
+  ctx._providerModels[ctx.adapterName] = model;
 }
 
 export function splitMessage(text: string): string[] {
@@ -92,7 +112,7 @@ export async function handleCommand(
         ctx._lastOutput = null;
         ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
-        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
         ctx._activeTrace.begin(held);
         ctx.session.write(held);
       } else {
@@ -109,13 +129,14 @@ export async function handleCommand(
   }
 
   // Commands
-  if (trimmed === "/start") return cmdStart(ctx, send);
+  if (trimmed === "/start" || trimmed.startsWith("/start ")) return cmdStart(trimmed, ctx, send);
   if (trimmed === "/stop") return cmdStop(ctx, send);
   if (trimmed === "/interrupt") return cmdInterrupt(ctx, send);
   if (trimmed === "/status") return cmdStatus(ctx, send);
   if (trimmed === "/verbose") return cmdVerbose(ctx, send);
   if (trimmed.startsWith("/history")) return cmdHistory(trimmed, ctx, send);
   if (trimmed === "/help") return cmdHelp(ctx, send);
+  if (trimmed.startsWith("/provider")) return cmdProvider(trimmed, ctx, send);
   if (trimmed === "/undo") return cmdUndo(ctx, send);
   if (trimmed.startsWith("/model")) return cmdModel(trimmed, ctx, send);
   if (trimmed.startsWith("/project")) return cmdProject(trimmed, ctx, send);
@@ -150,7 +171,7 @@ export async function handleCommand(
     ctx._lastOutput = null;
     ctx._lastExitCode = null;
     ctx._inputTime = Date.now();
-    ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+    ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
     ctx._activeTrace.begin(input);
     ctx.session.write(input);
     return;
@@ -163,16 +184,32 @@ export async function handleCommand(
   await send("No active session. Send /start to begin.");
 }
 
-async function cmdStart(ctx: CommandContext, send: SendFn) {
+async function cmdStart(text: string, ctx: CommandContext, send: SendFn) {
   if (ctx.session && ctx.session.state() !== "stopped") {
     await send("Session already running. Send /stop first.");
     return;
+  }
+
+  // Parse optional provider: /start codex-cli
+  const arg = text.replace("/start", "").trim();
+  if (arg) {
+    try {
+      getAdapter(arg); // validate it exists
+      ctx.adapterName = arg;
+    } catch {
+      await send(`Unknown provider: ${arg}. Available: ${listAdapters().join(", ")}`);
+      return;
+    }
   }
 
   // Guard: kill stale loginProc from a previous attempt
   if (ctx.loginProc) {
     ctx.loginProc.kill();
     ctx.loginProc = null;
+  }
+
+  if (ctx.adapterName !== "kiro") {
+    return startSession(ctx, send);
   }
 
   // Check if already logged in
@@ -207,11 +244,12 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
 
   // Drain stdout/stderr to prevent pipe buffer deadlock (BUG 4 fix)
   // Also detect login URLs printed by kiro-cli (BUG 2 fix)
+  let lastDetectedUrl: string | null = null;
   proc.stdout?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
     if (adapter.detectLoginUrl) {
       const url = adapter.detectLoginUrl(text);
-      if (url) send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`);
+      if (url) { lastDetectedUrl = url; send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`); }
     }
   });
 
@@ -219,7 +257,7 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
     const text = chunk.toString();
     if (adapter.detectLoginUrl) {
       const url = adapter.detectLoginUrl(text);
-      if (url) send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`);
+      if (url) { lastDetectedUrl = url; send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`); }
     }
   });
 
@@ -241,12 +279,12 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn) {
 
   setTimeout(async () => {
     if (ctx.loginProc !== proc) return;
-    const url = captureLoginUrl();
+    const url = lastDetectedUrl || captureLoginUrl();
     if (url) {
       await send(`🔑 Open this link to log in:\n${url}\n\nAfter authenticating, paste the failed localhost redirect URL back here.`);
       closeBrowserTab();
     } else {
-      await send("🌐 Browser opened. Copy the signin URL from your browser, authenticate on your phone, then paste the failed localhost URL back here.");
+      await send("🌐 Waiting for login URL from kiro-cli... If nothing appears, send /stop and try /start again.");
     }
   }, 3000);
 }
@@ -357,27 +395,40 @@ async function replayCallbackUrl(url: string, ctx: CommandContext, send: SendFn)
     await send(`🔑 Now authenticate here:\n${fullUrl}\n\nAfter you authorize, paste the failed localhost URL back here.`);
     closeBrowserTab();
   } else {
-    // Retry once more after a short delay
-    await new Promise((r) => setTimeout(r, 1500));
-    const retry = captureLoginUrl();
-    if (retry && /awsapps\.com/i.test(retry)) {
-      await send(`🔑 Now authenticate here:\n${retry}\n\nAfter you authorize, paste the failed localhost URL back here.`);
-      closeBrowserTab();
-    } else {
-      await send("🌐 Browser opened with the auth link. Copy the full URL from your browser (with query params) and authenticate, then paste the failed localhost URL back here.");
+    // Retry with longer delays
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const retry = captureLoginUrl();
+      if (retry && /awsapps\.com/i.test(retry)) {
+        await send(`🔑 Now authenticate here:\n${retry}\n\nAfter you authorize, paste the failed localhost URL back here.`);
+        closeBrowserTab();
+        return;
+      }
     }
+    await send("⚠️ Could not capture the auth URL. Check your browser for the AWS login page, authenticate there, then paste the failed localhost redirect URL back here.");
   }
   closeBrowserTab();
 }
 
 async function startSession(ctx: CommandContext, send: SendFn) {
+  // Guard: don't create a new session if one is already alive
+  if (ctx.session && ctx.session.state() !== "stopped") return;
+  // Debounce: don't create sessions faster than once per 5 seconds
+  const now = Date.now();
+  if (now - ctx._lastSessionAt < 5000) return;
+  ctx._lastSessionAt = now;
   const adapter = getAdapter(ctx.adapterName);
   const timeoutMs = readEnvNumber("KIRO_TIMEOUT_MS", 300_000);
   ctx._sessionId = randomUUID();
-  ctx.session = createModelSession({ adapter, cwd: ctx.cwd, model: ctx._kiroModel, timeoutMs });
+  const model = getCurrentProviderModel(ctx);
+  ctx.session = createModelSession({ adapter, cwd: ctx.cwd, model, timeoutMs });
   wireSession(ctx, send);
   ctx.session.start();
-  await send(`✅ Started ${adapter.name} (${ctx._kiroModel}) in ${ctx.cwd}`);
+  // Register session in store and emit WS event
+  const sessionDto = { id: ctx._sessionId, name: ctx.source === "telegram" ? "📱 Telegram" : "New Session", provider: ctx.adapterName, model, cwd: ctx.cwd, startedAt: new Date().toISOString(), active: true };
+  sessionStore.upsertSession(sessionDto);
+  wsEmit("session.started", sessionDto as Record<string, unknown>);
+  await send(`✅ Started ${adapter.name} (${model}) in ${ctx.cwd}`);
 }
 
 async function cmdStop(ctx: CommandContext, send: SendFn) {
@@ -392,6 +443,7 @@ async function cmdStop(ctx: CommandContext, send: SendFn) {
   ctx.session.kill();
   ctx.session = null;
   ctx._sessionId = null;
+  ctx._lastSessionAt = 0;
   ctx.queue = [];
   if (ctx.taskQueue) ctx.taskQueue.drain();
   try {
@@ -457,6 +509,7 @@ async function cmdHelp(_ctx: CommandContext, send: SendFn) {
       "/stop — kill session",
       "/interrupt — cancel current task",
       "/status — show state & queue",
+      "/provider — list available providers",
       "/model [name] — show or switch adapter",
       "/project <path> — switch working directory",
       "/verbose — toggle raw output streaming",
@@ -467,6 +520,38 @@ async function cmdHelp(_ctx: CommandContext, send: SendFn) {
       '"> text" — forward literally to model',
     ].join("\n")
   );
+}
+
+async function cmdProvider(text: string, ctx: CommandContext, send: SendFn) {
+  const providerOrder = ["kiro", "codex-cli", "gemini-cli"];
+  const available = new Set(listAdapters());
+  const providers = providerOrder.filter((name) => available.has(name));
+  const arg = text.replace("/provider", "").trim();
+
+  if (!arg) {
+    await send(providers.join("\n"));
+    return;
+  }
+
+  if (!providers.includes(arg)) {
+    await send(`Unknown provider "${arg}".\nAvailable providers:\n${providers.join("\n")}`);
+    return;
+  }
+
+  if (ctx.loginProc) {
+    ctx.loginProc.kill();
+    ctx.loginProc = null;
+  }
+
+  if (ctx.session && ctx.session.state() !== "stopped") {
+    ctx.session.kill();
+    ctx.session = null;
+  }
+
+  ctx.adapterName = arg;
+  ctx._lastSessionAt = 0;
+  await send(`Switched provider to ${arg}. Starting session...`);
+  await cmdStart("/start", ctx, send);
 }
 
 async function cmdUndo(ctx: CommandContext, send: SendFn) {
@@ -484,6 +569,41 @@ const KIRO_MODELS = [
   "deepseek-3.2", "minimax-m2.5", "minimax-m2.1", "glm-5", "qwen3-coder-next",
 ];
 
+const CODEX_MODELS = [
+  {
+    id: "gpt-5.5",
+    label: "default",
+    description: "Frontier model for complex coding, research, and real-world work.",
+  },
+  {
+    id: "gpt-5.4",
+    label: "current",
+    description: "Strong model for everyday coding.",
+  },
+  {
+    id: "gpt-5.4-mini",
+    label: "",
+    description: "Small, fast, and cost-efficient model for simpler coding tasks.",
+  },
+  {
+    id: "gpt-5.3-codex",
+    label: "",
+    description: "Coding-optimized model.",
+  },
+  {
+    id: "gpt-5.2",
+    label: "",
+    description: "Optimized for professional work and long-running agents.",
+  },
+] as const;
+
+function formatCodexModels(activeModel: string): string {
+  return CODEX_MODELS.map((model, index) => {
+    const marker = model.id === activeModel ? "▸" : "•";
+    return `${marker} ${index + 1}. ${model.id}`;
+  }).join("\n");
+}
+
 async function cmdModel(text: string, ctx: CommandContext, send: SendFn) {
   const arg = text.replace("/model", "").trim();
   if (!arg) {
@@ -492,22 +612,48 @@ async function cmdModel(text: string, ctx: CommandContext, send: SendFn) {
       const out = execSync("kiro-cli chat --list-models --format json", { timeout: 10000, encoding: "utf-8" });
       const data = JSON.parse(out);
       models = data.models.map((m: { model_name: string; rate_multiplier: number; description: string }) =>
-        `• ${m.model_name === ctx._kiroModel ? "▸ " : ""}${m.model_name} (${m.rate_multiplier}x) — ${m.description}`
+        `• ${m.model_name === getCurrentProviderModel(ctx) ? "▸ " : ""}${m.model_name} (${m.rate_multiplier}x) — ${m.description}`
       ).join("\n");
     } catch { /* fallback */ }
-    const current = `Adapter: ${ctx.adapterName}\nActive model: ${ctx._kiroModel}`;
-    await send(models ? `${current}\n\n${models}` : current);
+    const current = `Adapter: ${ctx.adapterName}\nActive model: ${getCurrentProviderModel(ctx)}`;
+    if (ctx.adapterName === "kiro") {
+      await send(models ? `${current}\n\n${models}` : current);
+      return;
+    }
+    if (ctx.adapterName === "codex-cli") {
+      await send(`${current}\n\n${formatCodexModels(getCurrentProviderModel(ctx))}`);
+      return;
+    }
+    await send(`${current}\n\nSet a model with /model <name>.`);
     return;
   }
 
   // Check if arg is a kiro model name
-  if (KIRO_MODELS.includes(arg)) {
-    ctx._kiroModel = arg;
+  if (ctx.adapterName === "kiro" && KIRO_MODELS.includes(arg)) {
+    setCurrentProviderModel(ctx, arg);
     if (ctx.session && ctx.session.state() !== "stopped") {
       ctx.session.kill();
       ctx.session = null;
+      ctx._lastSessionAt = 0;
       await send(`Switched to ${arg}. Restarting session...`);
-      return cmdStart(ctx, send);
+      return cmdStart("/start", ctx, send);
+    }
+    await send(`Model set to ${arg}. Send /start to begin.`);
+    return;
+  }
+
+  if (ctx.adapterName !== "kiro") {
+    if (ctx.adapterName === "codex-cli" && !CODEX_MODELS.some((model) => model.id === arg)) {
+      await send(`Unknown model "${arg}".\nCodex models: ${CODEX_MODELS.map((model) => model.id).join(", ")}`);
+      return;
+    }
+    setCurrentProviderModel(ctx, arg);
+    if (ctx.session && ctx.session.state() !== "stopped") {
+      ctx.session.kill();
+      ctx.session = null;
+      ctx._lastSessionAt = 0;
+      await send(`Switched to ${arg}. Restarting session...`);
+      return cmdStart("/start", ctx, send);
     }
     await send(`Model set to ${arg}. Send /start to begin.`);
     return;
@@ -619,6 +765,19 @@ export function extractHumanReply(text: string): string {
   let out = text;
   // Remove ANSI
   out = out.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+  // Remove codex CLI header/metadata
+  out = out.replace(/^.*Reading additional input from stdin.*$/gm, "");
+  out = out.replace(/^.*OpenAI Codex v[\d.]+.*$/gm, "");
+  out = out.replace(/^-{3,}$/gm, "");
+  out = out.replace(/^(?:workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries|session id):.*$/gm, "");
+  out = out.replace(/^(?:user|exec)$/gm, "");
+  out = out.replace(/^(?:tokens used|warning:).*$/gm, "");
+  out = out.replace(/^\d+[\d.]*$/gm, "");
+  // Extract codex response: take text between "codex" label and "tokens used" or end
+  const codexMatch = out.match(/^codex\n([\s\S]*?)(?:tokens used|$)/m);
+  if (codexMatch) out = codexMatch[1].trim();
+  // Fallback: strip "tokens used" and everything after it
+  out = out.replace(/tokens used[\s\S]*$/m, "").trim();
   // Remove code fences and their content
   out = out.replace(/```[\s\S]*?```/g, "");
   // Remove tool-use / agent progress lines
@@ -670,8 +829,22 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 
   ctx.session.onOutput((text) => {
 
+    // Filter out CLI spinner/progress noise — kill session if stuck in login loop
+    if (/^[\s▰▱░▓█⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|\\\/\-]*(?:Opening browser|Press \(\^\)|Waiting|Loading|Connecting)/i.test(text.trim())) {
+      if (ctx.session) {
+        ctx.session.kill();
+        ctx.session = null;
+        ctx._sessionId = null;
+      }
+      send("🛑 Session requires login. Send /start to authenticate.").catch(() => {});
+      return;
+    }
+
     // Capture output for tracing
     if (ctx._activeTrace) ctx._activeTrace.captureOutput(text);
+
+    // Emit realtime output event
+    wsEmit("session.output", { sessionId: ctx._sessionId, text: text.slice(0, 500) });
 
     // Destructive action check (output-level, second safety layer)
     if (DESTRUCTIVE_KEYWORDS.test(text) && !ctx.pendingConfirmation) {
@@ -692,6 +865,9 @@ function wireSession(ctx: CommandContext, send: SendFn) {
     } else {
       const reply = extractHumanReply(text);
       if (reply && reply.length >= 5) {
+        // Skip if it's just an echo of the user's input
+        const lastInput = ctx._lastInput?.trim();
+        if (lastInput && reply.trim() === lastInput) return;
         for (const part of splitMessage(reply)) {
           send(part).catch(() => {});
         }
@@ -716,7 +892,32 @@ function wireSession(ctx: CommandContext, send: SendFn) {
 
   ctx.session.onProcessEnd((code) => {
     if (ctx._activeTrace) {
-      ctx._activeTrace.end(code).catch(() => {});
+      const traceId = randomUUID();
+      const input = ctx._lastInput ?? "";
+      const output = ctx._lastOutput ?? "";
+      const durationMs = ctx._inputTime ? Date.now() - ctx._inputTime : 0;
+      const model = getCurrentProviderModel(ctx);
+      ctx._activeTrace.end(code).then(() => {
+        if (ctx._sessionId) {
+          const costEstimate = estimateCostUsd(ctx.adapterName, model, input, output, "");
+          sessionStore.addTrace({
+            id: traceId,
+            sessionId: ctx._sessionId,
+            input,
+            output,
+            provider: ctx.adapterName,
+            model,
+            costUsd: costEstimate.costUsd,
+            durationMs,
+            diffs: "",
+            stderr: "",
+            exitCode: code,
+            timestamp: new Date().toISOString(),
+          });
+          wsEmit("trace.updated", { sessionId: ctx._sessionId, traceId, costUsd: costEstimate.costUsd });
+          wsEmit("cost.updated", { sessionId: ctx._sessionId, costUsd: costEstimate.costUsd });
+        }
+      }).catch(() => {});
       ctx._activeTrace = null;
     }
     ctx._lastExitCode = code;
@@ -751,7 +952,7 @@ function wireSession(ctx: CommandContext, send: SendFn) {
         ctx._lastOutput = null;
         ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
-        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
+        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
         ctx._activeTrace.begin(next.prompt);
         ctx.session.write(next.prompt);
       }
@@ -763,6 +964,10 @@ function wireSession(ctx: CommandContext, send: SendFn) {
   });
 
   ctx.session.onExit((code) => {
+    if (ctx._sessionId) {
+      sessionStore.endSession(ctx._sessionId, code);
+      wsEmit("session.updated", { sessionId: ctx._sessionId, active: false, exitCode: code });
+    }
     send(`💀 Session exited (code: ${code ?? "unknown"}).`);
     ctx.session = null;
   });
@@ -798,7 +1003,7 @@ export function tickScheduler(ctx: CommandContext, send?: SendFn) {
         ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
         if (ctx._sessionId) {
-          ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, ctx._kiroModel);
+          ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, getCurrentProviderModel(ctx));
           ctx._activeTrace.begin(entry.message);
         }
         ctx.session.write(entry.message);

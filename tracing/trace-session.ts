@@ -1,6 +1,7 @@
 import { execSync } from "child_process";
 import { getLangfuse } from "./langfuse-client.ts";
 import type { LangfuseGenerationClient, LangfuseTraceClient } from "langfuse";
+import { estimateCostUsd } from "./model-pricing.ts";
 
 export interface TraceSession {
   sessionId: string;
@@ -65,27 +66,7 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
 
       if (!trace || !generation) return;
       try {
-        // Credit-based cost: Kiro Pro = $19/month for 1000 credits
-        // 1 credit = $0.019
-        const CREDIT_COST = 0.019;
-        const MODEL_CREDITS: Record<string, number> = {
-          "claude-sonnet-4": 1.30,
-          "claude-sonnet-4.5": 1.30,
-          "claude-sonnet-4.6": 1.30,
-          "claude-opus-4.5": 2.20,
-          "claude-opus-4.6": 2.20,
-          "claude-haiku-4.5": 0.40,
-          "deepseek-3.2": 0.25,
-          "auto": 1.00,
-        };
-        const credits = MODEL_CREDITS[model] ?? 1.00;
-        const costUsd = credits * CREDIT_COST;
-
-        // Langfuse calculates cost as: inputTokens * inputPrice + outputTokens * outputPrice
-        // We set model pricing to $0.000003/token input, $0.000015/token output
-        // To get correct total cost, we put all cost into input tokens:
-        // costUsd = inputTokens * 0.000003 → inputTokens = costUsd / 0.000003
-        const fakeInputTokens = Math.round(costUsd / 0.000003);
+        const costEstimate = estimateCostUsd(adapter, model, input, output, stderr);
 
         const lf = getLangfuse();
         if (!lf) return;
@@ -93,15 +74,33 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
         generation.end({
           output: truncate(output, 100_000),
           model: displayModel,
-          usage: { input: fakeInputTokens, output: 0 },
+          usage: {
+            input: costEstimate.inputTokens,
+            output: costEstimate.outputTokens,
+            total: costEstimate.totalTokens,
+            unit: "TOKENS",
+            inputCost: costEstimate.costUsd,
+            outputCost: 0,
+            totalCost: costEstimate.costUsd,
+          },
+          usageDetails: {
+            input: costEstimate.inputTokens,
+            output: costEstimate.outputTokens,
+            total: costEstimate.totalTokens,
+          },
+          costDetails: {
+            input: costEstimate.costUsd,
+            output: 0,
+            total: costEstimate.costUsd,
+          },
           metadata: {
             input,
             exitCode,
             durationMs,
             diffs: truncate(diffs, 10_000),
             stderr: truncate(stderr, 10_000),
-            creditsUsed: credits,
-            costPerRequest: `$${costUsd.toFixed(4)}`,
+            costPerRequest: `$${costEstimate.costUsd.toFixed(4)}`,
+            pricingSource: costEstimate.pricingSource,
           },
         });
         trace.update({

@@ -1,89 +1,62 @@
 # Design: AgentSchitzo
 
 ## Architecture
+
 ```
-Telegram ◄─HTTP─► AgentSchitzo ◄─stdio─► CLI Tool
-   │                    │                    │
-   └──────────────────► Langfuse ◄──────────┘
+Browser (PWA) ──HTTP/WS──┐
+                          ▼
+Telegram ◄──► AgentSchitzo Backend ◄──stdio──► CLI Providers
+                          │
+                          ▼
+                       Langfuse
 ```
 
-## Execution Flow
+## Stack
+
+- **Frontend**: React + Vite + TypeScript + PWA + WebSocket + charting
+- **Backend**: Node.js + TypeScript + HTTP API + WebSocket/SSE
+- **Core**: existing provider/session/tracing modules as services
+
+## Browser Menus
+
+- **Chat**: prompt submission, response history, provider/model selector, active session state
+- **Dashboard**: cost summary, provider/model breakdown, usage timeline, top 5 models, latency chart
+- **Trace**: session list (active/inactive), metadata table, prompt history, date filter, link to realtime
+- **Realtime**: live graph, append blocks per execution step, clickable → trace, shows provider/model/cost
+
+## API Endpoints
+
 ```
-Telegram/Terminal command
-→ Create session_id (UUID)
-→ Start Langfuse trace (trace_id = session_id, metadata: adapter/cwd)
-→ Spawn CLI tool (adapter.command + args, pipe stdio)
-→ Create Langfuse span (input: user command)
-→ Capture stdout/stderr (buffer 500ms debounce, strip ANSI, forward to Telegram)
-→ On exit: git diff capture, end span (output: stdout, metadata: diffs/stderr/exit_code/duration), notify Telegram
+GET  /api/dashboard/summary|usage-timeline|top-models|latencies
+GET  /api/sessions|sessions/:id
+GET  /api/traces|traces/:id
+POST /api/chat/send
+POST /api/provider/select|model/select|session/interrupt
 ```
+
+## Realtime Events
+
+`session.started`, `session.updated`, `session.output`, `session.completed`, `trace.updated`, `cost.updated`
 
 ## Module Structure
-```
-adapters/           # Interface + kiro/codex-cli/gemini-cli/local-llm + registry
-session/            # model-session.ts (child lifecycle) + output-buffer.ts (debounced + ANSI strip)
-tracing/            # langfuse-client.ts (SDK wrapper) + trace-session.ts (session trace lifecycle)
-telegram/           # handle-telegram-command.ts (router) + message-utils + telegram-api + task-log
-utils/              # env.ts
-```
 
-## New: `tracing/langfuse-client.ts`
-```ts
-interface LangfuseTracer {
-  startTrace(sessionId: string, metadata: TraceMetadata): Trace;
-  startSpan(trace: Trace, input: string): Span;
-  endSpan(span: Span, output: string, metadata: SpanMetadata): void;
-  flush(): Promise<void>;
-}
+```
+web/          # React PWA
+server/       # HTTP + WS backend
+adapters/     # CLI providers
+session/      # session lifecycle
+telegram/     # Telegram listener
+tracing/      # Langfuse integration
+scheduler/    # deferred jobs
+shared/       # DTOs/types
 ```
 
-## New: `tracing/trace-session.ts`
-```ts
-interface TraceSession {
-  begin(command: string): void;   // Creates span, records input
-  captureOutput(text: string): void;  // Appends to output buffer
-  captureStderr(text: string): void;
-  end(exitCode: number | null): Promise<void>;  // Captures diffs, ends span
-}
+## Flow
+
+```
+Browser/Telegram prompt → session manager → provider exec → stream output + emit realtime events + persist to Langfuse
 ```
 
-## Modified: `session/model-session.ts`
-Add hooks: `onProcessStart` (span creation), `onProcessEnd` (span completion), expose raw stderr
+## PWA
 
-## Modified: `telegram/application/handle-telegram-command.ts`
-Wire TraceSession: message → create TraceSession → begin(message) → modelSession.write → on output: captureOutput → on exit: end(exitCode)
-
-## File Diff Capture
-```ts
-function captureDiffs(cwd: string): string {
-  try { return execSync("git diff", { cwd, encoding: "utf-8" }); }
-  catch { return ""; }
-}
-```
-Attach to Langfuse span metadata. Truncate large diffs to 10KB.
-
-## Langfuse Trace Structure
-```
-Trace: session_id
-├── name: "agentschitzo-session"
-├── metadata: { adapter: "kiro", cwd: "/path" }
-├── Span: "execution-1"
-│   ├── input: "fix auth bug"
-│   ├── output: "Fixed..."
-│   └── metadata: { exitCode: 0, durationMs: 12400, diffs: "...", stderr: "" }
-└── Span: "execution-2"...
-```
-
-## Error Handling
-| Scenario | Action |
-|----------|--------|
-| Langfuse unavailable | Log warning, continue (non-blocking) |
-| CLI tool not on PATH | Error to Telegram, no trace |
-| CLI tool exits unexpectedly | End span w/ exit code, notify Telegram |
-| git diff fails | Empty diffs string |
-| Large output (>100KB) | Truncate before Langfuse |
-
-## Dependencies
-```json
-{ "langfuse": "^3.x" }
-```
+Manifest + icons + standalone display + installable + offline shell.

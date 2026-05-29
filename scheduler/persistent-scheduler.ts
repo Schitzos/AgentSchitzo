@@ -54,9 +54,12 @@ export function getDueSchedules(): { entry: ScheduleEntry; fire: boolean }[] {
   const day = now.getDay(); // 0=Sun, 6=Sat
   const isWeekday = day >= 1 && day <= 5;
   const isWeekend = day === 0 || day === 6;
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   for (const entry of entries) {
-    if (entry.hour !== now.getHours() || entry.minute !== now.getMinutes()) continue;
+    const entryMinutes = entry.hour * 60 + entry.minute;
+    // Allow 2-minute window to handle timer drift
+    if (nowMinutes < entryMinutes || nowMinutes > entryMinutes + 1) continue;
     if (entry.lastFired === today) continue;
 
     let shouldFire = false;
