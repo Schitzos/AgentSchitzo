@@ -18,15 +18,15 @@
 - [x] Split long messages at 4096 char boundary
 
 ## Phase 3: Langfuse Tracing (NEW)
-- [ ] Install `langfuse` SDK
-- [ ] `tracing/langfuse-client.ts` — thin wrapper (init, startTrace, startSpan, endSpan, flush)
-- [ ] `tracing/trace-session.ts` — orchestrates trace lifecycle per execution
-- [ ] Add `git diff` capture after CLI tool exits
-- [ ] Wire `TraceSession` into `handle-telegram-command.ts` flow
-- [ ] Add `LANGFUSE_*` env vars to `utils/env.ts`
-- [ ] Graceful degradation: tracing fails silently if Langfuse unavailable
+- [x] Install `langfuse` SDK
+- [x] `tracing/langfuse-client.ts` — thin wrapper (init, startTrace, startSpan, endSpan, flush)
+- [x] `tracing/trace-session.ts` — orchestrates trace lifecycle per execution
+- [x] Add `git diff` capture after CLI tool exits
+- [x] Wire `TraceSession` into `handle-telegram-command.ts` flow
+- [x] Add `LANGFUSE_*` env vars to `utils/env.ts`
+- [x] Graceful degradation: tracing fails silently if Langfuse unavailable
 - [ ] Test: verify traces appear in Langfuse dashboard
-- [ ] Add stderr capture as separate metadata on span
+- [x] Add stderr capture as separate metadata on span
 
 ## Phase 4: Advanced Features
 - [ ] `/project <path>` — switch working directory

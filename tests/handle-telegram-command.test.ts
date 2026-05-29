@@ -12,7 +12,9 @@ jest.unstable_mockModule("../session/model-session.ts", () => ({
     kill: jest.fn(),
     start: jest.fn(),
     onOutput: jest.fn(),
+    onStderr: jest.fn(),
     onLoginUrl: jest.fn(),
+    onProcessEnd: jest.fn(),
     onExit: jest.fn(),
     onIdle: jest.fn(),
   })),
@@ -351,13 +353,15 @@ describe("tickScheduler", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
     ctx.scheduled = [{ time: Date.now() - 1000, message: "do it" }];
     tickScheduler(ctx);
-    expect(ctx.session.write).toHaveBeenCalledWith("do it");
+    expect(ctx.session!.write).toHaveBeenCalledWith("do it");
     expect(ctx.scheduled.length).toBe(0);
   });
 
@@ -371,14 +375,16 @@ describe("tickScheduler", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
     ctx.scheduled = [{ time: Date.now() - 1000, message: "queued" }];
     tickScheduler(ctx);
     expect(ctx.queue).toContain("queued");
-    expect(ctx.session.write).not.toHaveBeenCalled();
+    expect(ctx.session!.write).not.toHaveBeenCalled();
   });
 
   it("does nothing when no session", () => {

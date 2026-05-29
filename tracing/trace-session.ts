@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
 import { getLangfuse } from "./langfuse-client.ts";
-import type { LangfuseTraceClient } from "langfuse";
+import type { LangfuseGenerationClient, LangfuseTraceClient } from "langfuse";
 
 export interface TraceSession {
   sessionId: string;
@@ -13,17 +13,21 @@ export interface TraceSession {
 export function createTraceSession(adapter: string, cwd: string, sessionId: string, model: string): TraceSession {
   const displayModel = model === "auto" ? "claude-auto" : model;
   let trace: LangfuseTraceClient | null = null;
-  let generationId: string | null = null;
+  let generation: LangfuseGenerationClient | null = null;
   let input = "";
   let output = "";
   let stderr = "";
-  let startTime: number = 0;
+  let startTime = 0;
+  let ended = false;
 
   return {
     sessionId,
 
     begin(command: string) {
+      ended = false;
       input = command;
+      output = "";
+      stderr = "";
       startTime = Date.now();
       const lf = getLangfuse();
       if (!lf) return;
@@ -33,15 +37,14 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
           name: "agentschitzo-session",
           sessionId,
           input: command,
-          metadata: { adapter, cwd },
+          metadata: { adapter, cwd, model: displayModel },
         });
-        const gen = trace.generation({
+        generation = trace.generation({
           name: "execution",
           input: command,
           model: displayModel,
           startTime: new Date(startTime),
         });
-        generationId = gen.id;
       } catch { /* non-blocking */ }
     },
 
@@ -54,10 +57,13 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
     },
 
     async end(exitCode: number | null) {
+      if (ended) return;
+      ended = true;
+
       const durationMs = Date.now() - startTime;
       const diffs = captureDiffs(cwd);
 
-      if (!trace || !generationId) return;
+      if (!trace || !generation) return;
       try {
         // Credit-based cost: Kiro Pro = $19/month for 1000 credits
         // 1 credit = $0.019
@@ -84,14 +90,12 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
         const lf = getLangfuse();
         if (!lf) return;
 
-        lf.generation({
-          id: generationId,
-          traceId: trace.id,
-          endTime: new Date(),
+        generation.end({
           output: truncate(output, 100_000),
           model: displayModel,
           usage: { input: fakeInputTokens, output: 0 },
           metadata: {
+            input,
             exitCode,
             durationMs,
             diffs: truncate(diffs, 10_000),
@@ -100,7 +104,10 @@ export function createTraceSession(adapter: string, cwd: string, sessionId: stri
             costPerRequest: `$${costUsd.toFixed(4)}`,
           },
         });
-        trace.update({ output: truncate(output, 100_000) });
+        trace.update({
+          output: truncate(output, 100_000),
+          metadata: { adapter, cwd, model: displayModel, exitCode, durationMs },
+        });
         await lf.flushAsync();
       } catch { /* non-blocking */ }
     },

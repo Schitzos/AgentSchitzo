@@ -148,7 +148,9 @@ describe("processUpdate", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
@@ -161,7 +163,7 @@ describe("processUpdate", () => {
       message: { chat: { id: 123 }, document: { file_id: "fid", file_name: "f.txt" } },
     };
     await processUpdate(update, ctx, send, { token: "t", chatId: "123", fetchFn: mockFetch as typeof fetch });
-    expect(ctx.session.write).toHaveBeenCalled();
+    expect(ctx.session!.write).toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith(expect.stringContaining("File saved"), true);
   });
 
@@ -175,7 +177,9 @@ describe("processUpdate", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
@@ -201,7 +205,9 @@ describe("processUpdate", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
@@ -241,7 +247,9 @@ describe("processUpdate", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
@@ -267,7 +275,9 @@ describe("processUpdate", () => {
       kill: jest.fn(),
       start: jest.fn(),
       onOutput: jest.fn(),
+      onStderr: jest.fn(),
       onLoginUrl: jest.fn(),
+      onProcessEnd: jest.fn(),
       onExit: jest.fn(),
       onIdle: jest.fn(),
     };
