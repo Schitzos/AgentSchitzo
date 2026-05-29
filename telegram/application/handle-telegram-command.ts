@@ -30,6 +30,7 @@ export interface CommandContext {
   lastReplayedUrl: string | null;
   _lastInput: string | null;
   _lastOutput: string | null;
+  _lastExitCode: number | null;
   _inputTime: number | null;
   _activeTrace: TraceSession | null;
   _sessionId: string | null;
@@ -52,10 +53,11 @@ export function createCommandContext(): CommandContext {
     lastReplayedUrl: null,
     _lastInput: null,
     _lastOutput: null,
+    _lastExitCode: null,
     _inputTime: null,
     _activeTrace: null,
     _sessionId: null,
-    _kiroModel: "claude-sonnet-4",
+    _kiroModel: "auto",
   };
 }
 
@@ -88,6 +90,7 @@ export async function handleCommand(
         await send("✅ Confirmed. Proceeding.");
         ctx._lastInput = held;
         ctx._lastOutput = null;
+        ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
         ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
         ctx._activeTrace.begin(held);
@@ -145,6 +148,7 @@ export async function handleCommand(
     }
     ctx._lastInput = input;
     ctx._lastOutput = null;
+    ctx._lastExitCode = null;
     ctx._inputTime = Date.now();
     ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
     ctx._activeTrace.begin(input);
@@ -699,12 +703,23 @@ function wireSession(ctx: CommandContext, send: SendFn) {
     send(`🔑 Login required:\n${url}`);
   });
 
-  ctx.session.onIdle(() => {
-    // End active trace
+  ctx.session.onStderr((text) => {
+    if (ctx._activeTrace) ctx._activeTrace.captureStderr(text);
+
+    if (ctx.verbose) {
+      const message = `stderr:\n${text}`.trim();
+      for (const part of splitMessage(message)) {
+        send(part, true).catch(() => {});
+      }
+    }
+  });
+
+  ctx.session.onProcessEnd((code) => {
     if (ctx._activeTrace) {
-      ctx._activeTrace.end(0).catch(() => {});
+      ctx._activeTrace.end(code).catch(() => {});
       ctx._activeTrace = null;
     }
+    ctx._lastExitCode = code;
 
     // Log completed interaction
     if (ctx._lastInput && ctx._lastOutput) {
@@ -712,21 +727,29 @@ function wireSession(ctx: CommandContext, send: SendFn) {
         prompt: ctx._lastInput,
         plan: "",
         output: ctx._lastOutput,
-        status: "done",
+        status: code === 0 ? "done" : "failed",
         startedAt: ctx._inputTime ?? undefined,
       }).catch(() => {});
       ctx._lastInput = null;
       ctx._lastOutput = null;
+      ctx._lastExitCode = null;
       ctx._inputTime = null;
     }
+  });
 
+  ctx.session.onIdle(() => {
     // Mark current task done and promote next
     if (ctx.taskQueue?.current()) {
-      ctx.taskQueue.markDone();
+      if (ctx._lastExitCode === 0 || ctx._lastExitCode === null) {
+        ctx.taskQueue.markDone();
+      } else {
+        ctx.taskQueue.markFailed();
+      }
       const next = ctx.taskQueue.current();
       if (next && ctx.session?.state() === "idle") {
         ctx._lastInput = next.prompt;
         ctx._lastOutput = null;
+        ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
         ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId!, ctx._kiroModel);
         ctx._activeTrace.begin(next.prompt);
@@ -735,17 +758,11 @@ function wireSession(ctx: CommandContext, send: SendFn) {
     } else {
       drainQueue();
     }
+
+    ctx._lastExitCode = null;
   });
 
   ctx.session.onExit((code) => {
-    // End active trace on unexpected exit
-    if (ctx._activeTrace) {
-      ctx._activeTrace.end(code).catch(() => {});
-      ctx._activeTrace = null;
-    }
-    if (ctx.taskQueue?.current()) {
-      ctx.taskQueue.markFailed();
-    }
     send(`💀 Session exited (code: ${code ?? "unknown"}).`);
     ctx.session = null;
   });
@@ -778,6 +795,7 @@ export function tickScheduler(ctx: CommandContext, send?: SendFn) {
       } else {
         ctx._lastInput = entry.message;
         ctx._lastOutput = null;
+        ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
         if (ctx._sessionId) {
           ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, ctx._kiroModel);
