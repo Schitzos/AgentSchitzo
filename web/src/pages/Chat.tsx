@@ -25,11 +25,11 @@ function cleanOutput(text: string): string {
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-const URL_RE = /(https?:\/\/[^\s<>"]+)/g;
+const URL_RE = /(https?:\/\/[^\s<>"]+)/;
 function renderText(text: string) {
-  const parts = text.split(URL_RE);
+  const parts = text.split(/(https?:\/\/[^\s<>"]+)/);
   return parts.map((part, i) =>
-    URL_RE.test(part)
+    /^https?:\/\//.test(part)
       ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline opacity-80 hover:opacity-100 break-all">{part}</a>
       : part
   );
@@ -52,6 +52,7 @@ export default function Chat() {
   const [cwd, setCwd] = useState("");
   const [providers, setProviders] = useState<string[]>([]);
   const [showProviderPicker, setShowProviderPicker] = useState(false);
+  const [uploadToast, setUploadToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const { connected, lastEvent } = useWebSocket();
   const { verboseLogs, addLog, clearLogs, theme } = useAppContext();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -109,9 +110,11 @@ export default function Chat() {
   useEffect(() => {
     if (!lastEvent) return;
     if (lastEvent.type === "trace.updated") {
-      setPending([]);
-      setCommandMessages([]);
       const sid = (lastEvent.payload.sessionId as string | undefined) ?? activeSessionIdRef.current;
+      if (sid === activeSessionIdRef.current) {
+        setPending([]);
+        setCommandMessages([]);
+      }
       if (sid) {
         if (sid !== activeSessionIdRef.current) setSession(sid);
         loadHistory(sid);
@@ -176,6 +179,8 @@ export default function Chat() {
         if (!isCommand) setPending((prev) => prev.filter((p) => p.id !== tempId));
         setError("Session not active. Retrying...");
         await api.session.start();
+        // Wait briefly for session.started WS event to update the session ID
+        await new Promise((r) => setTimeout(r, 500));
         await api.chat.send(fullMsg, activeSessionIdRef.current ?? undefined);
       }
     } catch (e: unknown) {
@@ -397,7 +402,7 @@ export default function Chat() {
                       </button>
                     </div>
                     <div className="text-xs text-slate-600 text-right">
-                      {t.model} · ${t.costUsd.toFixed(4)} · {(t.durationMs / 1000).toFixed(1)}s
+                      {t.model} · ${(t.costUsd ?? 0).toFixed(4)} · {(t.durationMs / 1000).toFixed(1)}s
                     </div>
                   </>
                 )}
@@ -432,6 +437,11 @@ export default function Chat() {
         </div>
 
         {error && <div className="px-4 py-1 bg-red-900/30 text-red-300 text-xs border-t border-red-800/30">{error}</div>}
+        {uploadToast && (
+          <div className={`px-4 py-1 text-xs border-t ${uploadToast.ok ? "bg-green-900/30 text-green-300 border-green-800/30" : "bg-red-900/30 text-red-300 border-red-800/30"}`}>
+            {uploadToast.msg}
+          </div>
+        )}
         {replyTo && (
           <div className={`flex items-center gap-2 px-4 py-2 border-t ${th.border} text-xs`}>
             <span className={th.accentText}>↩ Replying to:</span>
@@ -449,8 +459,17 @@ export default function Chat() {
                 e.target.value = "";
                 try {
                   const res = await api.upload(file);
-                  if (res.ok) setPrompt((p) => p + (p ? "\n" : "") + `[File: ${res.path}]`);
-                } catch {}
+                  if (res.ok) {
+                    setPrompt((p) => p + (p ? "\n" : "") + `[File: ${res.path}]`);
+                    setUploadToast({ ok: true, msg: `📎 ${res.name} attached` });
+                  } else {
+                    setUploadToast({ ok: false, msg: "Upload failed" });
+                  }
+                } catch (err) {
+                  setUploadToast({ ok: false, msg: err instanceof Error ? err.message : "Upload failed" });
+                } finally {
+                  setTimeout(() => setUploadToast(null), 3000);
+                }
               }} />
             </label>
             <textarea

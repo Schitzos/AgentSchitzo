@@ -38,7 +38,8 @@ function Nav() {
 
 export default function App() {
   const [verboseLogs, setVerboseLogs] = useState<string[]>([]);
-  const [theme, setTheme] = useState<Theme>("default");
+  const [theme, setThemeState] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) ?? "default");
+  const setTheme = useCallback((t: Theme) => { localStorage.setItem("theme", t); setThemeState(t); }, []);
   const addLog = useCallback((text: string) => {
     setVerboseLogs((prev) => [...prev.slice(-99), text]);
   }, []);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useWebSocket } from "../hooks/useWebSocket";
+import { useWebSocketEvents } from "../hooks/useWebSocket";
 import type { WsEvent } from "../types/dto";
 
 interface GraphBlock {
@@ -32,7 +32,7 @@ const EVENT_COLORS: Partial<Record<WsEvent["type"], string>> = {
 };
 
 export default function Realtime() {
-  const { connected, events, clearEvents } = useWebSocket();
+  const { connected, events, clearEvents } = useWebSocketEvents();
   const [blocks, setBlocks] = useState<GraphBlock[]>([]);
   const navigate = useNavigate();
 

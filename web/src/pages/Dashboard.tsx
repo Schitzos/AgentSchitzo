@@ -11,15 +11,16 @@ export default function Dashboard() {
   const [topModels, setTopModels] = useState<TopModelDTO[]>([]);
   const [latencies, setLatencies] = useState<{ model: string; p50: number; p95: number; avg: number }[]>([]);
   const [budget, setBudget] = useState<{ providerLimits: Record<string, number>; providerSpent: Record<string, number> } | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
+    Promise.allSettled([
       api.dashboard.summary().then(setSummary),
       api.dashboard.timeline().then(setTimeline),
       api.dashboard.topModels().then(setTopModels),
       api.dashboard.latencies().then(setLatencies),
       api.budget.get().then(setBudget),
-    ]).catch(() => {});
+    ]).finally(() => setLoading(false));
   }, []);
 
   const providerData = summary ? Object.entries(summary.byProvider).map(([name, v]) => ({ name, ...v })) : [];
@@ -32,10 +33,10 @@ export default function Dashboard() {
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card label="Total Cost" value={`$${(summary?.totalCostUsd ?? 0).toFixed(4)}`} />
-        <Card label="Total Requests" value={String(summary?.totalRequests ?? 0)} />
-        <Card label="Providers" value={String(Object.keys(summary?.byProvider ?? {}).length)} />
-        <Card label="Models" value={String(Object.keys(summary?.byModel ?? {}).length)} />
+        <Card label="Total Cost" value={loading ? "..." : `$${(summary?.totalCostUsd ?? 0).toFixed(4)}`} />
+        <Card label="Total Requests" value={loading ? "..." : String(summary?.totalRequests ?? 0)} />
+        <Card label="Providers" value={loading ? "..." : String(Object.keys(summary?.byProvider ?? {}).length)} />
+        <Card label="Models" value={loading ? "..." : String(Object.keys(summary?.byModel ?? {}).length)} />
       </div>
 
       {/* Budget vs Spend */}
