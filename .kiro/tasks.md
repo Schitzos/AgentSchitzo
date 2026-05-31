@@ -1,42 +1,52 @@
-# Tasks — Kiro Integration
+# Tasks — AgentSchitzo
 
-## Phase 0: Cleanup & Spike
+## Phase 1: Backend Foundation
+- [ ] HTTP API server for browser app
+- [ ] Realtime transport (WebSocket/SSE)
+- [ ] Shared DTOs for browser/backend
+- [ ] Telegram stays working against shared core
 
-- [x] Archive old Groq/Codex/verifier code to `archive/`
-- [x] Remove stale temp files (`codex-write-check.tmp`, `sandbox-write-test.txt`)
-- [ ] Spike: confirm `kiro` works headlessly via piped stdio (see `scripts/spike-kiro.sh`)
-- [ ] Document findings (latency, auth flow, output format)
+## Phase 2: Browser App Setup
+- [ ] Scaffold React + Vite + TypeScript
+- [ ] Router: Chat, Dashboard, Trace, Realtime
+- [ ] PWA support + install metadata
+- [ ] App shell layout/navigation
 
-## Phase 1: Core Session
+## Phase 3: Chat Menu
+- [ ] Browser chat page + prompt submission
+- [ ] Prompt/response history display
+- [ ] Provider + model selector
+- [ ] Active session state in browser
 
-- [ ] Create `adapters/cli-model-adapter.ts` interface
-- [ ] Implement `adapters/kiro.ts` adapter
-- [ ] Implement `session/model-session.ts` (spawn, write, interrupt, kill, events)
-- [ ] Implement `session/output-buffer.ts` (debounced flush, ANSI strip)
-- [ ] Unit tests for session and buffer
-- [ ] Manual end-to-end test: spawn kiro, send prompt, receive output
+## Phase 4: Dashboard Menu
+- [ ] Cost summary card (total + provider/model breakdown)
+- [ ] Usage timeline chart
+- [ ] Top 5 models list
+- [ ] Model latency chart
+- [ ] Backed by Langfuse API data
 
-## Phase 2: Telegram Integration
+## Phase 5: Trace Menu
+- [ ] Session list (active/inactive, id/time/provider/model/cost/duration/tokens)
+- [ ] Date-range filter
+- [ ] Session detail: prompt history first→latest
+- [ ] Link to realtime for active sessions
 
-- [ ] Rewrite `telegram/application/handle-telegram-command.ts` as command router
-- [ ] Wire model-session into Telegram polling loop
-- [ ] Implement `/start`, `/stop`, `/interrupt`, `/status`
-- [ ] Implement output forwarding (summary mode + verbose toggle)
-- [ ] Implement message queue (hold messages while kiro is processing)
-- [ ] Login URL detection and forwarding
-- [ ] Split long messages at 4096 char boundary
-- [ ] Integration test: Telegram → kiro → Telegram round-trip
+## Phase 6: Realtime Menu
+- [ ] Live graph UI (pipeline viz)
+- [ ] Stream realtime events from backend
+- [ ] Append blocks as execution grows
+- [ ] Clickable blocks → trace detail
+- [ ] Provider/model/cost per block
 
-## Phase 3: Advanced Features
+## Phase 7: Integration
+- [ ] Browser + Telegram share same session
+- [ ] Provider/model switching from both surfaces
+- [ ] Langfuse-backed APIs for traces + dashboard
+- [ ] Realtime events correlate with stored traces
 
-- [ ] `/project <path>` — switch working directory
-- [ ] `/history` — in-memory task summaries
-- [ ] `/schedule <time> <msg>` — deferred commands
-- [ ] `/undo` — revert last change
-- [ ] Destructive-action confirmation (keyword scan + pause)
-- [ ] File/photo upload → save to `./uploads/` → notify kiro
-- [ ] Webhook mode (`TELEGRAM_MODE=webhook`)
-- [ ] Notification priority levels (silent for info, audible for important)
-- [ ] Session auto-resume on restart (PID file check)
-- [ ] Additional adapters: `gemini-cli`, `codex-cli`, `local-llm`
-- [ ] `/model <name>` hot-swap
+## Phase 8: MVP Hardening
+- [ ] Responsive layout polish
+- [ ] PWA install verification
+- [ ] Error handling for disconnected realtime
+- [ ] Graceful when Langfuse unavailable
+- [ ] E2E validation: browser chat, trace, dashboard, realtime, Telegram
