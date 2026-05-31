@@ -8,7 +8,7 @@
     <array>
         <string>/Users/rizkyrachmawan/.nvm/versions/node/v20.20.0/bin/npx</string>
         <string>tsx</string>
-        <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/scripts/daily-ai-news.ts</string>
+        <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo/node/scripts/daily-ai-news.ts</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo</string>

@@ -8,7 +8,7 @@
     <array>
         <string>/Users/rizkyrachmawan/.nvm/versions/node/v20.20.0/bin/npx</string>
         <string>tsx</string>
-        <string>telegram-listener.ts</string>
+        <string>node/src/main.ts</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/rizkyrachmawan/MyProject/learn/AgentSchitzo</string>
