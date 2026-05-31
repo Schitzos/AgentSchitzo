@@ -16,6 +16,7 @@ export function useWebSocket() {
     socket.onopen = () => setConnected(true);
     socket.onclose = () => {
       setConnected(false);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       reconnectTimer.current = setTimeout(connect, 3000);
     };
     socket.onerror = () => socket.close();

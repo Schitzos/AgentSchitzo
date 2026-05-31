@@ -71,6 +71,10 @@ export const api = {
   session: {
     start: () => post<{ ok: boolean; message: string }>("/session/start", {}),
     new: () => post<{ ok: boolean; sessionId: string | null; message: string }>("/session/new", {}),
+    startWithProvider: (provider: string) => post<{ ok: boolean; sessionId: string | null; message: string }>("/session/start-with-provider", { provider }),
+  },
+  providers: {
+    list: () => get<{ providers: string[] }>("/providers"),
   },
   provider: {
     select: (provider: string) => post("/provider/select", { provider }),
@@ -81,5 +85,15 @@ export const api = {
     pick: () => get<{ ok: boolean; path: string | null }>("/project/pick"),
     select: (path: string) => post<{ ok: boolean; cwd: string; message: string }>("/project/select", { path }),
   },
-  status: () => get<{ activeSessions: number; sessions: SessionDTO[] }>("/status"),
+  status: () => get<{ activeSessions: number; sessions: (SessionDTO & { costUsd?: number })[] }>("/status"),
+  budget: {
+    get: () => get<{ providerLimits: Record<string, number>; alertThreshold: number; providerSpent: Record<string, number> }>("/settings/budget"),
+    set: (body: { providerLimits?: Record<string, number>; alertThreshold?: number }) =>
+      post<{ ok: boolean }>("/settings/budget", body),
+  },
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return fetch(`${BASE}/upload`, { method: "POST", body: form }).then((r) => r.json()) as Promise<{ ok: boolean; path: string; name: string }>;
+  },
 };

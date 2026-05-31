@@ -76,6 +76,8 @@ export type WsEventType =
   | "session.completed"
   | "trace.updated"
   | "cost.updated"
+  | "command.response"
+  | "budget.alert"
   | "connected";
 
 export interface WsEvent {

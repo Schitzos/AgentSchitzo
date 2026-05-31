@@ -5,28 +5,41 @@ import { useAppContext } from "../App";
 import type { TraceDTO, SessionDTO } from "../types/dto";
 
 interface PendingMessage { id: string; input: string; replyTo?: string }
+interface CommandMessage { id: string; text: string; isCommand: true }
 
 const QUICK_COMMANDS = ["/status", "/interrupt", "/verbose", "/model", "/history", "/undo", "/help"];
 
 function cleanOutput(text: string): string {
   let out = text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
-  out = out.replace(/^.*Reading additional input from stdin.*$/gm, "");
-  out = out.replace(/^.*OpenAI Codex v[\d.]+.*$/gm, "");
+  // Codex format: "codex <content>tokens used X.XXX<content repeated>"
+  // Extract just the content between "codex " and "tokens used"
+  const codexInline = out.match(/^codex ([\s\S]*?)tokens used [\d.]+/);
+  if (codexInline) return codexInline[1].trim();
+  // Fallback: strip "codex " prefix and everything from "tokens used" onward
+  out = out.replace(/^codex\s+/, "");
+  out = out.replace(/tokens used[\s\S]*$/, "").trim();
+  // Strip known metadata-only lines
+  out = out.replace(/^(workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries|session id):.*$/gm, "");
+  out = out.replace(/^(user|exec|assistant)$/gm, "");
   out = out.replace(/^-{3,}$/gm, "");
-  out = out.replace(/^(?:workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries|session id):.*$/gm, "");
-  out = out.replace(/^(?:user|exec)$/gm, "");
-  out = out.replace(/^(?:tokens used|warning:).*$/gm, "");
-  out = out.replace(/^\d+[\d.]*$/gm, "");
-  const codexMatch = out.match(/^codex\n([\s\S]*?)(?:tokens used|$)/m);
-  if (codexMatch) return codexMatch[1].trim();
-  out = out.replace(/tokens used[\s\S]*$/m, "").trim();
   return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+const URL_RE = /(https?:\/\/[^\s<>"]+)/g;
+function renderText(text: string) {
+  const parts = text.split(URL_RE);
+  return parts.map((part, i) =>
+    URL_RE.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline opacity-80 hover:opacity-100 break-all">{part}</a>
+      : part
+  );
 }
 
 export default function Chat() {
   const [prompt, setPrompt] = useState("");
   const [history, setHistory] = useState<TraceDTO[]>([]);
   const [pending, setPending] = useState<PendingMessage[]>([]);
+  const [commandMessages, setCommandMessages] = useState<CommandMessage[]>([]);
   const [sessions, setSessions] = useState<SessionDTO[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -35,9 +48,12 @@ export default function Chat() {
   const [replyTo, setReplyTo] = useState<TraceDTO | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("");
+  const [providers, setProviders] = useState<string[]>([]);
+  const [showProviderPicker, setShowProviderPicker] = useState(false);
   const { connected, lastEvent } = useWebSocket();
-  const { verboseLogs, addLog, clearLogs } = useAppContext();
+  const { verboseLogs, addLog, clearLogs, theme } = useAppContext();
   const bottomRef = useRef<HTMLDivElement>(null);
   const logsBottomRef = useRef<HTMLDivElement>(null);
   // Use a ref so event handlers always see the current session ID without stale closures
@@ -57,34 +73,44 @@ export default function Chat() {
     setActiveSessionId(id);
   }, []);
 
-  // Auto-start on mount
+  // On mount: if active session exists resume it, otherwise show provider picker
   useEffect(() => {
-    setStarting(true);
+    api.providers.list().then((r) => setProviders(r.providers)).catch(() => {});
+    api.project.current().then((r) => setCwd(r.cwd)).catch(() => {});
+    loadSessions();
     api.status().then((s) => {
       if (s.sessions[0]) {
         setSession(s.sessions[0].id);
         loadHistory(s.sessions[0].id);
-        setStarting(false);
       } else {
-        api.session.start()
-          .then(() => api.status().then((s2) => {
-            if (s2.sessions[0]) {
-              setSession(s2.sessions[0].id);
-              loadHistory(s2.sessions[0].id);
-            }
-          }))
-          .catch(() => {})
-          .finally(() => setStarting(false));
+        setShowProviderPicker(true);
       }
-    }).catch(() => setStarting(false));
-    loadSessions();
-    api.project.current().then((r) => setCwd(r.cwd)).catch(() => {});
+    }).catch(() => setShowProviderPicker(true));
   }, []);
+
+  async function startWithProvider(provider: string) {
+    setShowProviderPicker(false);
+    setStarting(true);
+    try {
+      const res = await api.session.startWithProvider(provider);
+      if (res.sessionId) {
+        setSession(res.sessionId);
+        loadHistory(res.sessionId);
+      }
+      loadSessions();
+    } catch {
+      setError("Failed to start session");
+      setShowProviderPicker(true);
+    } finally {
+      setStarting(false);
+    }
+  }
 
   useEffect(() => {
     if (!lastEvent) return;
     if (lastEvent.type === "trace.updated") {
       setPending([]);
+      setCommandMessages([]);
       const sid = (lastEvent.payload.sessionId as string | undefined) ?? activeSessionIdRef.current;
       if (sid) {
         if (sid !== activeSessionIdRef.current) setSession(sid);
@@ -92,7 +118,7 @@ export default function Chat() {
       }
       loadSessions();
     }
-    if (lastEvent.type === "session.started") {
+    if (lastEvent.type === "session.started" || lastEvent.type === "session.updated") {
       loadSessions();
     }
     if (lastEvent.type === "session.output") {
@@ -101,6 +127,23 @@ export default function Chat() {
     }
     if (lastEvent.type === "session.completed") {
       addLog("✓ Done");
+    }
+    if (lastEvent.type === "command.response") {
+      const text = String(lastEvent.payload.text ?? "").trim();
+      if (text) {
+        setPending([]);
+        setCommandMessages((prev) => [...prev, { id: `cmd-${Date.now()}-${Math.random()}`, text, isCommand: true }]);
+      }
+    }
+    if (lastEvent.type === "budget.alert") {
+      const level = lastEvent.payload.level as string;
+      const provider = lastEvent.payload.provider as string;
+      const spent = lastEvent.payload.spent as number;
+      const limit = lastEvent.payload.limit as number;
+      const msg = level === "exceeded"
+        ? `🚨 ${provider} budget exceeded! $${spent.toFixed(4)} of $${limit} limit.`
+        : `⚠️ ${provider} budget ${Math.round(spent / limit * 100)}% used — $${spent.toFixed(4)} of $${limit}.`;
+      setCommandMessages((prev) => [...prev, { id: `budget-${Date.now()}`, text: msg, isCommand: true }]);
     }
   }, [lastEvent]);
 
@@ -114,11 +157,14 @@ export default function Chat() {
     setError("");
     if (!text) setPrompt("");
 
+    const isCommand = msg.startsWith("/");
     const fullMsg = replyTo ? `[Replying to: "${replyTo.output.slice(0, 100)}"]\n${msg}` : msg;
     setReplyTo(null);
 
     const tempId = `p-${Date.now()}`;
-    setPending((prev) => [...prev, { id: tempId, input: msg, replyTo: replyTo?.output.slice(0, 80) }]);
+    if (!isCommand) {
+      setPending((prev) => [...prev, { id: tempId, input: msg, replyTo: replyTo?.output.slice(0, 80) }]);
+    }
 
     try {
       const res = await api.chat.send(fullMsg, activeSessionIdRef.current ?? undefined);
@@ -127,13 +173,13 @@ export default function Chat() {
         setSession(res.sessionId);
       }
       if (!res.sessionActive) {
-        setPending((prev) => prev.filter((p) => p.id !== tempId));
+        if (!isCommand) setPending((prev) => prev.filter((p) => p.id !== tempId));
         setError("Session not active. Retrying...");
         await api.session.start();
         await api.chat.send(fullMsg, activeSessionIdRef.current ?? undefined);
       }
     } catch (e: unknown) {
-      setPending((prev) => prev.filter((p) => p.id !== tempId));
+      if (!isCommand) setPending((prev) => prev.filter((p) => p.id !== tempId));
       setError(e instanceof Error ? e.message : "Failed to send");
     } finally {
       setSending(false);
@@ -147,26 +193,67 @@ export default function Chat() {
     loadSessions();
   }
 
-  const allItems = [...[...history].reverse(), ...pending];
+  const allItems = [...[...history].reverse(), ...commandMessages, ...pending];
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const sessionCost = history.reduce((sum, t) => sum + (t.costUsd ?? 0), 0);
+
+  const themes = {
+    default: { bg: "bg-slate-950", panel: "bg-slate-950", border: "border-slate-800/50", accent: "bg-blue-600 hover:bg-blue-500", accentText: "text-blue-400", bubble: "bg-gradient-to-br from-blue-600 to-blue-700", reply: "bg-slate-800/60 text-slate-100 border-slate-700/30", input: "bg-slate-800/40 border-slate-700/40", tag: "bg-slate-800/50 text-slate-400 border-slate-700/30" },
+    amber: { bg: "bg-black", panel: "bg-zinc-950", border: "border-amber-900/40", accent: "bg-amber-600 hover:bg-amber-500", accentText: "text-amber-400", bubble: "bg-gradient-to-br from-amber-600 to-red-700", reply: "bg-zinc-900/80 text-amber-100 border-amber-900/30", input: "bg-zinc-900/60 border-amber-900/40", tag: "bg-zinc-900/60 text-amber-500 border-amber-900/30" },
+    matrix: { bg: "bg-black", panel: "bg-black", border: "border-green-900/40", accent: "bg-green-700 hover:bg-green-600", accentText: "text-green-400", bubble: "bg-gradient-to-br from-green-800 to-green-900", reply: "bg-black text-green-300 border-green-900/40", input: "bg-black border-green-900/40", tag: "bg-black text-green-500 border-green-900/30" },
+  };
+  const th = themes[theme];
+
+  const providerIcons: Record<string, string> = {
+    kiro: "🤖", "codex-cli": "⚡", "gemini-cli": "✨", "local-llm": "🏠",
+  };
+
+  const providerDescriptions: Record<string, string> = {
+    kiro: "AWS Kiro (requires login)",
+    "codex-cli": "OpenAI Codex CLI",
+    "gemini-cli": "Google Gemini CLI",
+    "local-llm": "Local LLM",
+  };
 
   return (
-    <div className="flex h-[calc(100vh-49px)]">
+    <div className={`flex h-[calc(100vh-49px)] relative overflow-hidden ${th.bg}`}>
+      {/* Provider picker modal */}
+      {showProviderPicker && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="w-full max-w-xs mx-4 bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-base font-semibold text-slate-100">Select Provider</h2>
+              {activeSessionId && (
+                <button onClick={() => setShowProviderPicker(false)} className="text-slate-500 hover:text-white text-lg leading-none">✕</button>
+              )}
+            </div>
+            <p className="text-xs text-slate-500 mb-5">Choose the AI provider to start your session</p>
+            {starting ? (
+              <div className="text-center text-slate-400 text-sm py-4 animate-pulse">Starting session...</div>
+            ) : (
+              <div className="space-y-2">
+                {(providers.length ? providers : ["kiro", "codex-cli", "gemini-cli"]).map((p) => (
+                  <button key={p} onClick={() => startWithProvider(p)}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-800/60 hover:bg-slate-700/70 border border-slate-700/40 hover:border-blue-500/50 transition-all text-left group">
+                    <span className="text-xl">{providerIcons[p] ?? "🔌"}</span>
+                    <div>
+                      <div className="text-sm text-slate-200 font-medium group-hover:text-white">{p}</div>
+                      <div className="text-xs text-slate-500">{providerDescriptions[p] ?? ""}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {error && <p className="text-xs text-red-400 text-center mt-4">{error}</p>}
+          </div>
+        </div>
+      )}
       {/* Session sidebar */}
       <div className="w-56 border-r border-slate-800/50 flex flex-col bg-slate-950 shrink-0">
         <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-800/50">
           <span className="text-xs text-slate-400 font-medium tracking-wide">SESSIONS</span>
           <button
-            onClick={async () => {
-              setStarting(true);
-              setPending([]);
-              setHistory([]);
-              try {
-                const res = await api.session.new();
-                if (res.sessionId) { setSession(res.sessionId); setHistory([]); }
-                loadSessions();
-              } finally { setStarting(false); }
-            }}
+            onClick={() => { setPending([]); setHistory([]); setSession(null); setShowProviderPicker(true); }}
             className="text-xs px-2.5 py-1 rounded-full bg-blue-600 hover:bg-blue-500 text-white transition-colors font-medium"
           >
             + New
@@ -184,18 +271,23 @@ export default function Chat() {
                   onKeyDown={(e) => { if (e.key === "Enter") saveSessionName(s.id); if (e.key === "Escape") setEditingSessionId(null); }}
                   onClick={(e) => e.stopPropagation()}
                   className="w-full bg-slate-700 text-white text-xs rounded px-1 py-0.5 outline-none" />
+              ) : confirmDeleteId === s.id ? (
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-xs text-red-400 flex-1">Delete?</span>
+                  <button onClick={async () => {
+                    await api.sessions.delete(s.id).catch(() => {});
+                    if (activeSessionIdRef.current === s.id) { setSession(null); setHistory([]); }
+                    setConfirmDeleteId(null);
+                    loadSessions();
+                  }} className="text-xs px-1.5 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white">Yes</button>
+                  <button onClick={() => setConfirmDeleteId(null)} className="text-xs px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-white">No</button>
+                </div>
               ) : (
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-xs text-slate-300 truncate flex-1">{s.name || "New Session"}</span>
                   <button onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditName(s.name || ""); }}
                     className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white text-xs">✎</button>
-                  <button onClick={async (e) => {
-                      e.stopPropagation();
-                      if (!confirm("Delete this session?")) return;
-                      await api.sessions.delete(s.id).catch(() => {});
-                      if (activeSessionIdRef.current === s.id) { setSession(null); setHistory([]); }
-                      loadSessions();
-                    }}
+                  <button onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(s.id); }}
                     className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 text-xs">✕</button>
                 </div>
               )}
@@ -211,7 +303,7 @@ export default function Chat() {
       {/* Main chat area */}
       <div className="flex flex-col flex-1 min-w-0 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
         {/* Status bar */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-800/50 text-sm shrink-0 backdrop-blur-sm">
+        <div className={`flex items-center gap-3 px-4 py-2 border-b ${th.border} text-sm shrink-0 backdrop-blur-sm`}>
           <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`} />
           <span className="text-slate-400">{connected ? "Connected" : "Disconnected"}</span>
           {starting && <span className="text-slate-500 text-xs">Starting session...</span>}
@@ -219,21 +311,16 @@ export default function Chat() {
             <>
               <span className="text-slate-700">|</span>
               <span className="text-slate-300 text-xs">{activeSession.name || "New Session"}</span>
-              <span className={`ml-auto text-xs px-2 py-0.5 rounded-full ${activeSession.active ? "bg-green-900/60 text-green-300 border border-green-800/50" : "bg-slate-800 text-slate-400"}`}>
-                {activeSession.active ? "active" : "idle"}
-              </span>
+              <div className="ml-auto flex items-center gap-2">
+                {sessionCost > 0 && <span className={`text-xs ${th.accentText}`}>${sessionCost.toFixed(4)}</span>}
+                <span className={`text-xs px-2 py-0.5 rounded-full ${activeSession.active ? "bg-green-900/60 text-green-300 border border-green-800/50" : "bg-slate-800 text-slate-400"}`}>
+                  {activeSession.active ? "active" : "idle"}
+                </span>
+              </div>
             </>
           )}
         </div>
 
-        {/* Reply banner */}
-        {replyTo && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-slate-800/50 border-b border-slate-700/50 text-xs backdrop-blur-sm">
-            <span className="text-blue-400">↩ Replying to:</span>
-            <span className="text-slate-400 truncate flex-1">{replyTo.output.slice(0, 80)}</span>
-            <button onClick={() => setReplyTo(null)} className="text-slate-500 hover:text-white">✕</button>
-          </div>
-        )}
 
         {/* History */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -263,10 +350,23 @@ export default function Chat() {
             </div>
           )}
           {allItems.map((item) => {
-            const isPending = !("output" in item);
+            const isPending = !("output" in item) && !("isCommand" in item);
+            const isCommand = "isCommand" in item;
             const p = item as PendingMessage;
+            const cmd = item as CommandMessage;
             const t = item as TraceDTO;
-            const replyMatch = item.input.match(/^\[Replying to: "(.*?)"]\n?/s);
+
+            if (isCommand) {
+              return (
+                <div key={cmd.id} className="flex justify-start">
+                  <div className="bg-slate-700/50 text-slate-200 rounded-2xl rounded-tl-sm px-4 py-2 max-w-[80%] text-sm whitespace-pre-wrap border border-slate-600/30 font-mono text-xs">
+                    {cmd.text}
+                  </div>
+                </div>
+              );
+            }
+
+            const replyMatch = item.input.match(/^\[Replying to: "([\s\S]*?)"\]\n/);
             const displayInput = replyMatch ? item.input.slice(replyMatch[0].length) : item.input;
             const replyQuote = isPending ? p.replyTo : replyMatch?.[1];
             return (
@@ -288,8 +388,8 @@ export default function Chat() {
                 ) : (
                   <>
                     <div className="flex justify-start group">
-                      <div className="bg-slate-800/60 text-slate-100 rounded-2xl rounded-tl-sm px-4 py-2 max-w-[80%] text-sm whitespace-pre-wrap border border-slate-700/30">
-                        {cleanOutput(t.output)}
+                      <div className={`${th.reply} rounded-2xl rounded-tl-sm px-4 py-2 max-w-[80%] text-sm whitespace-pre-wrap border`}>
+                        {renderText(cleanOutput(t.output))}
                       </div>
                       <button onClick={() => setReplyTo(t)}
                         className="ml-2 opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white text-xs self-end pb-2 transition-opacity">
@@ -332,8 +432,27 @@ export default function Chat() {
         </div>
 
         {error && <div className="px-4 py-1 bg-red-900/30 text-red-300 text-xs border-t border-red-800/30">{error}</div>}
+        {replyTo && (
+          <div className={`flex items-center gap-2 px-4 py-2 border-t ${th.border} text-xs`}>
+            <span className={th.accentText}>↩ Replying to:</span>
+            <span className="text-slate-400 truncate flex-1">{replyTo.output.slice(0, 80)}</span>
+            <button onClick={() => setReplyTo(null)} className="text-slate-500 hover:text-white">✕</button>
+          </div>
+        )}
         <div className="p-4">
-          <div className="flex gap-2 bg-slate-800/40 rounded-2xl border border-slate-700/40 p-1.5">
+          <div className={`flex gap-2 ${th.input} rounded-2xl border p-1.5`}>
+            <label className="self-end pb-2 px-1 cursor-pointer text-slate-500 hover:text-slate-300 transition-colors" title="Attach file">
+              📎
+              <input type="file" className="hidden" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                e.target.value = "";
+                try {
+                  const res = await api.upload(file);
+                  if (res.ok) setPrompt((p) => p + (p ? "\n" : "") + `[File: ${res.path}]`);
+                } catch {}
+              }} />
+            </label>
             <textarea
               className="flex-1 bg-transparent text-slate-100 rounded-xl px-4 py-3 text-sm resize-none outline-none placeholder-slate-500"
               rows={1}
@@ -352,17 +471,20 @@ export default function Chat() {
       </div>
 
       {/* Live activity panel */}
-      <div className="w-64 border-l border-slate-800/50 flex flex-col bg-slate-950 shrink-0">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-800/50">
+      <div className={`w-64 border-l ${th.border} flex flex-col ${th.panel} shrink-0`}>
+        <div className={`flex items-center justify-between px-3 py-2.5 border-b ${th.border}`}>
           <span className="text-xs text-slate-400 font-medium tracking-wide">LIVE ACTIVITY</span>
           <button onClick={clearLogs} className="text-xs text-slate-600 hover:text-slate-300 transition-colors">Clear</button>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1">
+        <div className="flex-1 overflow-y-auto p-3 space-y-0">
           {verboseLogs.length === 0 && (
             <div className="text-xs text-slate-600 italic">Activity will appear here...</div>
           )}
           {verboseLogs.map((log, i) => (
-            <div key={i} className="text-xs text-slate-400 leading-relaxed break-words">{log}</div>
+            <div key={i}>
+              <div className={`text-xs leading-relaxed break-words py-1 ${th.accentText === "text-green-400" ? "text-green-400/80" : th.accentText === "text-amber-400" ? "text-amber-200/80" : "text-slate-400"}`}>{log}</div>
+              {i < verboseLogs.length - 1 && <div className={`border-t ${th.border} opacity-40`} />}
+            </div>
           ))}
           <div ref={logsBottomRef} />
         </div>

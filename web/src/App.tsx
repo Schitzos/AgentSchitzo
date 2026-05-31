@@ -3,23 +3,24 @@ import { createContext, useContext, useState, useCallback } from "react";
 import Chat from "./pages/Chat";
 import Dashboard from "./pages/Dashboard";
 import Traces from "./pages/Traces";
+import Settings from "./pages/Settings";
 
-// Global state context (persists across navigation)
+export type Theme = "default" | "amber" | "matrix";
+
 interface AppState {
   verboseLogs: string[];
   addLog: (text: string) => void;
   clearLogs: () => void;
+  theme: Theme;
+  setTheme: (t: Theme) => void;
 }
 
 export const AppContext = createContext<AppState>({
-  verboseLogs: [],
-  addLog: () => {},
-  clearLogs: () => {},
+  verboseLogs: [], addLog: () => {}, clearLogs: () => {},
+  theme: "default", setTheme: () => {},
 });
 
-export function useAppContext() {
-  return useContext(AppContext);
-}
+export function useAppContext() { return useContext(AppContext); }
 
 function Nav() {
   const cls = ({ isActive }: { isActive: boolean }) =>
@@ -30,19 +31,21 @@ function Nav() {
       <NavLink to="/chat" className={cls}>Chat</NavLink>
       <NavLink to="/dashboard" className={cls}>Dashboard</NavLink>
       <NavLink to="/traces" className={cls}>Traces</NavLink>
+      <NavLink to="/settings" className={cls}>Settings</NavLink>
     </nav>
   );
 }
 
 export default function App() {
   const [verboseLogs, setVerboseLogs] = useState<string[]>([]);
+  const [theme, setTheme] = useState<Theme>("default");
   const addLog = useCallback((text: string) => {
     setVerboseLogs((prev) => [...prev.slice(-99), text]);
   }, []);
   const clearLogs = useCallback(() => setVerboseLogs([]), []);
 
   return (
-    <AppContext.Provider value={{ verboseLogs, addLog, clearLogs }}>
+    <AppContext.Provider value={{ verboseLogs, addLog, clearLogs, theme, setTheme }}>
       <BrowserRouter>
         <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
           <Nav />
@@ -53,6 +56,7 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/traces" element={<Traces />} />
               <Route path="/traces/:id" element={<Traces />} />
+              <Route path="/settings" element={<Settings />} />
             </Routes>
           </main>
         </div>
