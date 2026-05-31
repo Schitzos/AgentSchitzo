@@ -144,18 +144,29 @@ apiRouter.post("/project/select", (req, res) => {
 });
 
 apiRouter.get("/project/pick", async (_req, res) => {
-  const { execSync } = await import("child_process");
+  const { spawn } = await import("child_process");
   try {
-    let dir: string;
-    if (process.platform === "darwin") {
-      dir = execSync(`osascript -e 'set f to POSIX path of (choose folder with prompt "Select project folder")' -e 'return f'`, { encoding: "utf-8", timeout: 120000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-    } else if (process.platform === "win32") {
-      dir = execSync(`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if($f.ShowDialog() -eq 'OK'){$f.SelectedPath}"`, { encoding: "utf-8", timeout: 120000 }).trim();
-    } else {
-      dir = execSync(`zenity --file-selection --directory 2>/dev/null || kdialog --getexistingdirectory ~ 2>/dev/null`, { encoding: "utf-8", timeout: 120000 }).trim();
-    }
-    if (!dir) return res.json({ ok: false, path: null });
-    res.json({ ok: true, path: dir.replace(/\/$/, "") });
+    const result = await new Promise<string>((resolve, reject) => {
+      let cmd: string, args: string[];
+      if (process.platform === "darwin") {
+        cmd = "osascript";
+        args = ["-e", "set f to POSIX path of (choose folder with prompt \"Select project folder\")", "-e", "return f"];
+      } else if (process.platform === "win32") {
+        cmd = "powershell";
+        args = ["-Command", "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; if($f.ShowDialog() -eq 'OK'){$f.SelectedPath}"];
+      } else {
+        cmd = "sh";
+        args = ["-c", "zenity --file-selection --directory 2>/dev/null || kdialog --getexistingdirectory ~ 2>/dev/null"];
+      }
+      const proc = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+      let out = "";
+      proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+      const timer = setTimeout(() => { proc.kill(); reject(new Error("timeout")); }, 120000);
+      proc.on("close", () => { clearTimeout(timer); resolve(out.trim()); });
+      proc.on("error", reject);
+    });
+    if (!result) return res.json({ ok: false, path: null });
+    res.json({ ok: true, path: result.replace(/\/$/, "") });
   } catch {
     res.json({ ok: false, path: null });
   }

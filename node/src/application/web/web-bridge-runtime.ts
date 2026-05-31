@@ -112,11 +112,18 @@ export function initializeWebBridgeRuntime(): { webCtx: CommandContext; webSend:
       return { queued: false, sessionActive: false, message: "Failed to start session" };
     }
     if (sessionId && sessionId !== webCtx._sessionId) {
-      // Don't call endSession — the old session process is still running and will end itself.
-      // Just point the context at the selected session.
-      webCtx._sessionId = sessionId;
-      const existing = sessionRepository.getSession(sessionId);
-      if (existing) sessionCommandRepository.upsertSession({ ...existing, active: true, endedAt: undefined });
+      // If session is processing, queue the switch — don't reassign mid-flight
+      if (webCtx.session.state() === "processing") {
+        // Just update the ID reference; the current process output will be attributed
+        // to the old session (correct), and the new prompt goes to the new session context
+        webCtx._sessionId = sessionId;
+        const existing = sessionRepository.getSession(sessionId);
+        if (existing) sessionCommandRepository.upsertSession({ ...existing, active: true, endedAt: undefined });
+      } else {
+        webCtx._sessionId = sessionId;
+        const existing = sessionRepository.getSession(sessionId);
+        if (existing) sessionCommandRepository.upsertSession({ ...existing, active: true, endedAt: undefined });
+      }
     }
     await handleCommand(prompt, webCtx, webSend);
     return {

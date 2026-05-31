@@ -48,7 +48,7 @@ export function formatStatus(entry: TaskEntry, extra?: string): string {
   return msg;
 }
 
-export function createTaskQueue(send: SendFn): TaskQueue {
+export function createTaskQueue(send: SendFn, isSessionIdle?: () => boolean): TaskQueue {
   const queue: TaskEntry[] = [];
   let active: TaskEntry | null = null;
   let nextId = 1;
@@ -60,14 +60,14 @@ export function createTaskQueue(send: SendFn): TaskQueue {
   return {
     enqueue(prompt: string): TaskEntry {
       const entry: TaskEntry = { id: nextId++, prompt, status: "queued" };
-      if (!active) {
+      if (!active && (isSessionIdle ? isSessionIdle() : true)) {
         active = entry;
         active.status = "running";
         active.startedAt = Date.now();
         notify(active);
       } else {
         queue.push(entry);
-        notify(entry, `${queue.length}`);
+        notify(entry, `${queue.length + (active ? 1 : 0)}`);
       }
       return entry;
     },

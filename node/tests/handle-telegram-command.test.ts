@@ -7,7 +7,7 @@ jest.unstable_mockModule("../src/session/model-session.ts", () => ({
   createModelSession: jest.fn(() => ({
     state: jest.fn(() => "idle"),
     adapterName: jest.fn(() => "kiro"),
-    write: jest.fn(),
+    write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
     interrupt: jest.fn(),
     kill: jest.fn(),
     start: jest.fn(),
@@ -389,7 +389,7 @@ describe("tickScheduler", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),
@@ -411,7 +411,7 @@ describe("tickScheduler", () => {
     ctx.session = {
       state: () => "processing",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),

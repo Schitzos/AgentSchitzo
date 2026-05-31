@@ -16,7 +16,7 @@ export default function Settings() {
   const [spent, setSpent] = useState<Record<string, number>>({});
   const [threshold, setThreshold] = useState("80");
   const [resetMonth, setResetMonth] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<"idle" | "ok" | "err">("idle");
 
   function loadBudget() {
     api.budget.get().then((b) => {
@@ -36,9 +36,14 @@ export default function Settings() {
     for (const [p, v] of Object.entries(limits)) {
       if (v) providerLimits[p] = parseFloat(v);
     }
-    await api.budget.set({ providerLimits, alertThreshold: parseFloat(threshold) / 100 });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    try {
+      await api.budget.set({ providerLimits, alertThreshold: parseFloat(threshold) / 100 });
+      setSaved("ok");
+    } catch {
+      setSaved("err");
+    } finally {
+      setTimeout(() => setSaved("idle"), 2000);
+    }
   }
 
   return (
@@ -97,13 +102,11 @@ export default function Settings() {
           </div>
           <div className="flex gap-2">
             <button onClick={saveBudget}
-              className="flex-1 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
-              {saved ? "✓ Saved" : "Save Budget"}
+              className={`flex-1 py-2 rounded-lg text-white text-sm font-medium transition-colors ${saved === "err" ? "bg-red-600" : "bg-blue-600 hover:bg-blue-500"}`}>
+              {saved === "ok" ? "✓ Saved" : saved === "err" ? "✗ Failed" : "Save Budget"}
             </button>
-            <button onClick={async () => {
-              await fetch("/api/settings/budget/reset", { method: "POST" });
-              loadBudget();
-            }} className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs transition-colors" title="Reset spend counters now">
+            <button onClick={async () => { await api.budget.reset(); loadBudget(); }}
+              className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs transition-colors" title="Reset spend counters now">
               Reset Now
             </button>
           </div>

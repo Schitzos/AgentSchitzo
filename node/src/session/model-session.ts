@@ -7,7 +7,7 @@ export type SessionState = "idle" | "processing" | "stopped";
 export interface ModelSession {
   state(): SessionState;
   adapterName(): string;
-  write(input: string): void;
+  write(input: string): boolean;
   interrupt(): void;
   kill(): void;
   onOutput(cb: (text: string) => void): void;
@@ -135,13 +135,11 @@ export function createModelSession(opts: ModelSessionOptions): ModelSession {
       // No-op for per-message mode; session is "started" and ready
       currentState = "idle";
     },
-    write(input: string) {
-      if (stopped) return;
-      if (proc) {
-        // Already running a command — this shouldn't happen (queue handles it)
-        return;
-      }
+    write(input: string): boolean {
+      if (stopped) return false;
+      if (proc) return false;
       runCommand(input);
+      return true;
     },
     interrupt() {
       if (proc) {

@@ -12,6 +12,8 @@ const BASE = "/api";
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.headers.get("content-type")?.includes("application/json"))
+    throw new Error(`Expected JSON but got ${res.headers.get("content-type")}`);
   return res.json();
 }
 
@@ -22,6 +24,8 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.headers.get("content-type")?.includes("application/json"))
+    throw new Error(`Expected JSON but got ${res.headers.get("content-type")}`);
   return res.json();
 }
 
@@ -90,6 +94,7 @@ export const api = {
     get: () => get<{ providerLimits: Record<string, number>; alertThreshold: number; providerSpent: Record<string, number> }>("/settings/budget"),
     set: (body: { providerLimits?: Record<string, number>; alertThreshold?: number }) =>
       post<{ ok: boolean }>("/settings/budget", body),
+    reset: () => post<{ ok: boolean }>("/settings/budget/reset", {}),
   },
   upload: (file: File) => {
     const form = new FormData();

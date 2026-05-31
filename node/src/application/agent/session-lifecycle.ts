@@ -201,7 +201,10 @@ async function spawnLoginFlow(ctx: CommandContext, send: SendFn, startSession: (
 export async function startSession(ctx: CommandContext, send: SendFn) {
   if (ctx.session && ctx.session.state() !== "stopped") return;
   const now = Date.now();
-  if (now - ctx._lastSessionAt < 5000) return;
+  if (now - ctx._lastSessionAt < 5000) {
+    await send("⏳ Session is starting, please wait...");
+    return;
+  }
   ctx._lastSessionAt = now;
   const adapter = getAdapter(ctx.adapterName);
   const timeoutMs = readEnvNumber("KIRO_TIMEOUT_MS", 300_000);
@@ -305,7 +308,7 @@ export async function forwardInput(input: string, ctx: CommandContext, send: Sen
 
   if (ctx.session) {
     if (ctx.session.state() === "processing") {
-      if (!ctx.taskQueue) ctx.taskQueue = createTaskQueue(send);
+      if (!ctx.taskQueue) ctx.taskQueue = createTaskQueue(send, () => ctx.session?.state() === "idle");
       ctx.taskQueue.enqueue(input);
       return;
     }
@@ -325,7 +328,12 @@ export async function forwardInput(input: string, ctx: CommandContext, send: Sen
       getCurrentProviderModel(ctx)
     );
     ctx._activeTrace.begin(input);
-    ctx.session.write(input);
+    const accepted = ctx.session.write(input);
+    if (!accepted) {
+      ctx._activeTrace = null;
+      ctx._lastInput = null;
+      ctx._inputTime = null;
+    }
     return;
   }
 

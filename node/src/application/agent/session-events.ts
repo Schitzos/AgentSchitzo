@@ -19,29 +19,45 @@ export interface SendFn {
 export function wireSession(ctx: CommandContext, send: SendFn) {
   if (!ctx.session) return;
 
+  let draining = false;
+
   function drainQueue() {
-    if (ctx.taskQueue) {
-      const next = ctx.taskQueue.current();
-      if (next && next.status === "running" && ctx.session?.state() === "idle") {
-        ctx._lastInput = next.prompt;
+    if (draining) return;
+    draining = true;
+    try {
+      if (ctx.taskQueue) {
+        const next = ctx.taskQueue.current();
+        if (next && next.status === "running" && ctx.session?.state() === "idle") {
+          ctx._lastInput = next.prompt;
+          ctx._lastOutput = null;
+          ctx._lastExitCode = null;
+          ctx._inputTime = Date.now();
+          ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
+          ctx._activeTrace.begin(next.prompt);
+          if (!ctx.session.write(next.prompt)) {
+            ctx._activeTrace = null;
+            ctx._lastInput = null;
+            ctx._inputTime = null;
+          }
+        }
+      } else if (ctx.queue.length > 0 && ctx.session?.state() === "idle") {
+        const next = ctx.queue.shift()!;
+        ctx._lastInput = next;
         ctx._lastOutput = null;
         ctx._lastExitCode = null;
         ctx._inputTime = Date.now();
-        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
-        ctx._activeTrace.begin(next.prompt);
-        ctx.session.write(next.prompt);
+        if (ctx._sessionId) {
+          ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, getCurrentProviderModel(ctx));
+          ctx._activeTrace.begin(next);
+        }
+        if (!ctx.session.write(next)) {
+          ctx._activeTrace = null;
+          ctx._lastInput = null;
+          ctx._inputTime = null;
+        }
       }
-    } else if (ctx.queue.length > 0 && ctx.session?.state() === "idle") {
-      const next = ctx.queue.shift()!;
-      ctx._lastInput = next;
-      ctx._lastOutput = null;
-      ctx._lastExitCode = null;
-      ctx._inputTime = Date.now();
-      if (ctx._sessionId) {
-        ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId, getCurrentProviderModel(ctx));
-        ctx._activeTrace.begin(next);
-      }
-      ctx.session.write(next);
+    } finally {
+      draining = false;
     }
   }
 
@@ -71,16 +87,16 @@ export function wireSession(ctx: CommandContext, send: SendFn) {
 
     wsEmit("session.output", { sessionId: ctx._sessionId, text: text.slice(0, 500) });
 
+    ctx.history.push(text.slice(0, 200));
+    if (ctx.history.length > 50) ctx.history.shift();
+    ctx._lastOutput = text;
+
     if (DESTRUCTIVE_KEYWORDS.test(text) && !ctx.pendingConfirmation) {
       ctx.pendingConfirmation = "__output__";
       const preview = text.slice(0, 200);
       send(`⚠️ Destructive action detected in output:\n${preview}\n\nReply /yes to continue or /no to interrupt.`);
       return;
     }
-
-    ctx.history.push(text.slice(0, 200));
-    if (ctx.history.length > 50) ctx.history.shift();
-    ctx._lastOutput = text;
 
     if (ctx.verbose) {
       for (const part of splitMessage(text)) {
@@ -189,7 +205,11 @@ export function wireSession(ctx: CommandContext, send: SendFn) {
         ctx._inputTime = Date.now();
         ctx._activeTrace = createTraceSession(ctx.adapterName, ctx.cwd, ctx._sessionId ?? "unknown", getCurrentProviderModel(ctx));
         ctx._activeTrace.begin(next.prompt);
-        ctx.session.write(next.prompt);
+        if (!ctx.session.write(next.prompt)) {
+          ctx._activeTrace = null;
+          ctx._lastInput = null;
+          ctx._inputTime = null;
+        }
       }
     } else {
       ctx._lastExitCode = null;
