@@ -14,21 +14,21 @@ AgentSchitzo is a Node.js Telegram automation service that lets a single approve
 
 ## Request flow
 
-1. `telegram-listener.js` creates the app, Telegram API client, command handler, and polling loop.
-2. `telegram/application/handle-telegram-command.js` asks a text model to return JSON describing the request intent.
+1. `node/src/main.ts` creates the app, Telegram API client, command handler, and polling loop.
+2. `node/src/telegram/application/handle-telegram-command.ts` asks a text model to return JSON describing the request intent.
 3. If the intent is `chat`, the service replies directly in Telegram.
 4. If the intent is `code`, the service builds a Codex prompt and runs the local Codex CLI.
-5. `telegram/application/code-task-verifier.js` runs the Jest suite and reads `coverage/coverage-summary.json`.
+5. `node/src/telegram/application/handle-telegram-command.ts` coordinates session execution, verification prompts, and repair flow.
 6. If tests or coverage fail, Codex gets a repair prompt and retries up to three times.
 
 ## Main modules
 
-- `telegram/`: Telegram polling, command handling, permissions, and message utilities.
+- `node/src/telegram/`: Telegram polling, command handling, permissions, and message utilities.
 - `models/code/codex.js`: Local Codex CLI runner.
 - `models/text/groq.js`: Intent classification through the Groq OpenAI-compatible API.
 - `models/text/gemini.js`: Gemini text model adapter.
-- `utils/env.js`: Lightweight `.env` loader and environment helpers.
-- `tests/`: Jest coverage for Telegram flow, model adapters, and utilities.
+- `node/src/utils/env.ts`: Lightweight `.env` loader and environment helpers.
+- `node/tests/`: Jest coverage for Telegram flow, model adapters, and utilities.
 
 ## Requirements
 
