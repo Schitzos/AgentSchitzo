@@ -10,6 +10,7 @@ export default function Dashboard() {
   const [timeline, setTimeline] = useState<UsageTimelineDTO[]>([]);
   const [topModels, setTopModels] = useState<TopModelDTO[]>([]);
   const [latencies, setLatencies] = useState<{ model: string; p50: number; p95: number; avg: number }[]>([]);
+  const [budget, setBudget] = useState<{ providerLimits: Record<string, number>; providerSpent: Record<string, number> } | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -17,11 +18,15 @@ export default function Dashboard() {
       api.dashboard.timeline().then(setTimeline),
       api.dashboard.topModels().then(setTopModels),
       api.dashboard.latencies().then(setLatencies),
+      api.budget.get().then(setBudget),
     ]).catch(() => {});
   }, []);
 
   const providerData = summary ? Object.entries(summary.byProvider).map(([name, v]) => ({ name, ...v })) : [];
   const modelData = summary ? Object.entries(summary.byModel).map(([name, v]) => ({ name, ...v })) : [];
+
+  // Providers that have a budget limit set
+  const budgetProviders = budget ? Object.entries(budget.providerLimits).filter(([, limit]) => limit > 0) : [];
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -32,6 +37,34 @@ export default function Dashboard() {
         <Card label="Providers" value={String(Object.keys(summary?.byProvider ?? {}).length)} />
         <Card label="Models" value={String(Object.keys(summary?.byModel ?? {}).length)} />
       </div>
+
+      {/* Budget vs Spend */}
+      {budgetProviders.length > 0 && (
+        <Section title="Monthly Budget">
+          <div className="space-y-3">
+            {budgetProviders.map(([provider, limit]) => {
+              const spent = budget?.providerSpent[provider] ?? 0;
+              const pct = Math.min(100, (spent / limit) * 100);
+              const color = pct >= 100 ? "#ef4444" : pct >= 80 ? "#f59e0b" : "#3b82f6";
+              return (
+                <div key={provider}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-300">{provider}</span>
+                    <span className="text-slate-400">
+                      <span style={{ color }}>${spent.toFixed(4)}</span>
+                      <span className="text-slate-600"> / ${limit}</span>
+                      <span className="ml-2 text-slate-500">{Math.round(pct)}%</span>
+                    </span>
+                  </div>
+                  <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      )}
 
       {/* Usage timeline */}
       <Section title="Cost Over Time">
@@ -74,7 +107,7 @@ export default function Dashboard() {
             {topModels.map((m, i) => (
               <div key={m.model} className="flex items-center gap-3 text-sm">
                 <span className="text-slate-500 w-4">{i + 1}</span>
-                <span className="flex-1 truncate">{m.model}</span>
+                <span className="flex-1 truncate">{m.provider}/{m.model}</span>
                 <span className="text-slate-400">{m.requests}x</span>
                 <span className="text-slate-400">${m.costUsd.toFixed(4)}</span>
               </div>
