@@ -46,11 +46,14 @@ function openDb(): Database.Database {
 
 const db = openDb();
 // Migration: add hidden column if it doesn't exist
-try { db.exec("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"); } catch (e) {
+  if (!(e instanceof Error && e.message.includes("duplicate column"))) throw e;
+}
 
 db.prepare(`
-  DELETE FROM sessions WHERE active = 0
+  DELETE FROM sessions WHERE active = 0 AND hidden = 0
   AND NOT EXISTS (SELECT 1 FROM traces WHERE traces.sessionId = sessions.id)
+  AND startedAt < datetime('now', '-1 day')
 `).run();
 
 export function upsertSession(session: SessionDTO): void {

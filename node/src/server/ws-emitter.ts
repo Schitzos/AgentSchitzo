@@ -18,7 +18,7 @@ export function emit(type: WsEventType, payload: Record<string, unknown>): void 
   const msg = JSON.stringify(event);
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
+      try { client.send(msg); } catch {}
     }
   });
 }

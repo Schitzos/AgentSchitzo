@@ -143,7 +143,7 @@ describe("processUpdate", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),
@@ -172,7 +172,7 @@ describe("processUpdate", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),
@@ -200,7 +200,7 @@ describe("processUpdate", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),
@@ -242,7 +242,7 @@ describe("processUpdate", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),
@@ -270,7 +270,7 @@ describe("processUpdate", () => {
     ctx.session = {
       state: () => "idle",
       adapterName: () => "kiro",
-      write: jest.fn(),
+      write: jest.fn().mockReturnValue(true) as unknown as (input: string) => boolean,
       interrupt: jest.fn(),
       kill: jest.fn(),
       start: jest.fn(),

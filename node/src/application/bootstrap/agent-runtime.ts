@@ -51,6 +51,7 @@ async function startPolling(
   }
 
   const seen = new Set<number>();
+  const seenOrder: number[] = [];
 
   async function poll() {
     try {
@@ -58,14 +59,13 @@ async function startPolling(
       for (const update of updates) {
         if (seen.has(update.update_id)) continue;
         seen.add(update.update_id);
-        if (seen.size > 200) {
-          const oldest = Math.min(...seen);
-          seen.delete(oldest);
-        }
+        seenOrder.push(update.update_id);
+        if (seenOrder.length > 200) seen.delete(seenOrder.shift()!);
         try {
           await processUpdate(update, ctx, send, { token, chatId });
-        } catch {}
-        // Don't add +1 here — getUpdates already adds +1 to the offset in the URL
+        } catch (err) {
+          console.error("[poll] processUpdate error:", err instanceof Error ? err.message : err);
+        }
         offset = update.update_id;
       }
     } catch {}

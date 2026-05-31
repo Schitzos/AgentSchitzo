@@ -54,7 +54,7 @@ export function getBudget(getTotal: (p: string) => number): BudgetConfig & { pro
 
 export function setBudget(config: Partial<Pick<BudgetConfig, "providerLimits" | "alertThreshold">>): void {
   const cfg = load();
-  if (config.providerLimits !== undefined) cfg.providerLimits = config.providerLimits;
+  if (config.providerLimits !== undefined) cfg.providerLimits = { ...cfg.providerLimits, ...config.providerLimits };
   if (config.alertThreshold !== undefined) cfg.alertThreshold = config.alertThreshold;
   save(cfg);
 }
