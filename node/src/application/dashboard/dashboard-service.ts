@@ -10,7 +10,7 @@ function percentile(values: number[], p: number): number {
 
 export function createDashboardService(repository: SessionRepository) {
   function getRecentTraces(limit: number): TraceDTO[] {
-    return repository.getTraces({ limit });
+    return repository.getTraces({ limit, includeHidden: true });
   }
 
   return {

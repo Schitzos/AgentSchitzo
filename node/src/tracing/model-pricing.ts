@@ -50,6 +50,8 @@ const GEMINI_MODEL_PRICING: Record<string, TokenPricing> = {
   "gemini-2.5-flash-lite": { kind: "token-rates", inputPerMillionUsd: 0.1, outputPerMillionUsd: 0.4 },
   "gemini-2.0-flash": { kind: "token-rates", inputPerMillionUsd: 0.1, outputPerMillionUsd: 0.4 },
   "gemini-2.0-flash-lite": { kind: "token-rates", inputPerMillionUsd: 0.075, outputPerMillionUsd: 0.3 },
+  // "default" maps to gemini-2.5-flash pricing
+  "default": { kind: "token-rates", inputPerMillionUsd: 0.3, outputPerMillionUsd: 2.5 },
 };
 
 const LOCAL_MODEL_PRICING: Record<string, LocalPricing> = {

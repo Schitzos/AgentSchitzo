@@ -6,6 +6,7 @@ export interface TraceQuery {
   from?: string;
   to?: string;
   limit?: number;
+  includeHidden?: boolean;
 }
 
 export interface SessionRepository {

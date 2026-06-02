@@ -274,6 +274,11 @@ export async function cmdStop(ctx: CommandContext, send: SendFn) {
     await send("No active session.");
     return;
   }
+  // Mark session ended in DB before clearing _sessionId so onExit doesn't miss it
+  if (ctx._sessionId) {
+    sessionCommandRepository.endSession(ctx._sessionId, 0);
+    wsEmit("session.updated", { sessionId: ctx._sessionId, active: false, exitCode: 0 });
+  }
   ctx.session.kill();
   ctx.session = null;
   ctx._sessionId = null;
