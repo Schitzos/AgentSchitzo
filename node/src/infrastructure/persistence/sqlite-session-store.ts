@@ -126,13 +126,14 @@ export function addTrace(trace: TraceDTO): void {
 
 export function getProviderTotalCost(provider: string): number {
   const row = db.prepare(
-    "SELECT COALESCE(SUM(t.costUsd), 0) as total FROM traces t JOIN sessions s ON t.sessionId = s.id WHERE s.hidden = 0 AND t.provider = ?"
+    "SELECT COALESCE(SUM(costUsd), 0) as total FROM traces WHERE provider = ?"
   ).get(provider) as { total: number };
   return row.total;
 }
 
-export function getTraces(opts?: { sessionId?: string; provider?: string; from?: string; to?: string; limit?: number }): TraceDTO[] {
-  let sql = "SELECT t.* FROM traces t JOIN sessions s ON t.sessionId = s.id WHERE s.hidden = 0";
+export function getTraces(opts?: { sessionId?: string; provider?: string; from?: string; to?: string; limit?: number; includeHidden?: boolean }): TraceDTO[] {
+  const hiddenFilter = opts?.includeHidden ? "" : " AND s.hidden = 0";
+  let sql = `SELECT t.* FROM traces t JOIN sessions s ON t.sessionId = s.id WHERE 1=1${hiddenFilter}`;
   const params: unknown[] = [];
   if (opts?.sessionId) { sql += " AND t.sessionId=?"; params.push(opts.sessionId); }
   if (opts?.provider) { sql += " AND t.provider=?"; params.push(opts.provider); }
